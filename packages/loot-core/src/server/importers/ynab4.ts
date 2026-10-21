@@ -1,12 +1,14 @@
 // @ts-strict-ignore
-import AdmZip from 'adm-zip';
 import { v4 as uuidv4 } from 'uuid';
 
 import { logger } from '#platform/server/log';
 import { send } from '#server/main-app';
+import { safeUnzip } from '#server/util/zip';
 import * as monthUtils from '#shared/months';
 import { amountToInteger, groupBy, sortByKey } from '#shared/util';
 
+import { runImportSteps } from './progress';
+import type { ImportTick } from './progress';
 import type * as YNAB4 from './ynab4-types';
 
 // Importer
@@ -14,6 +16,7 @@ import type * as YNAB4 from './ynab4-types';
 async function importAccounts(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   const accounts = sortByKey(data.accounts, 'sortableIndex');
 
@@ -28,6 +31,7 @@ async function importAccounts(
           },
         });
         entityIdMap.set(account.entityId, id);
+        tick();
       }
     }),
   );
@@ -36,6 +40,7 @@ async function importAccounts(
 async function importCategories(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   const masterCategories = sortByKey(data.masterCategories, 'sortableIndex');
 
@@ -54,6 +59,7 @@ async function importCategories(
           },
         });
         entityIdMap.set(masterCategory.entityId, id);
+        tick();
         if (masterCategory.note) {
           void send('notes-save', {
             id,
@@ -95,6 +101,7 @@ async function importCategories(
                 },
               });
               entityIdMap.set(category.entityId, id);
+              tick();
               if (category.note) {
                 void send('notes-save', {
                   id,
@@ -112,6 +119,7 @@ async function importCategories(
 async function importPayees(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   for (const payee of data.payees) {
     if (!payee.isTombstone) {
@@ -125,17 +133,17 @@ async function importPayees(
       // TODO: import payee rules
 
       entityIdMap.set(payee.entityId, id);
+      tick();
     }
   }
 }
 
-async function importTransactions(
+export async function importTransactions(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
-  const categories = await send('api/categories-get', {
-    grouped: false,
-  });
+  const categories = await send('api/categories-get');
   const incomeCategoryId: string = categories.find(
     cat => cat.name === 'Income',
   ).id;
@@ -206,7 +214,7 @@ async function importTransactions(
 
             return {
               transfer_id: transferId,
-              payee,
+              ...(payee != null ? { payee } : {}),
               imported_payee,
             };
           }
@@ -250,6 +258,11 @@ async function importTransactions(
         learnCategories: true,
         runTransfers: false,
       });
+      tick(
+        toImport.length,
+        data.accounts.find(account => account.entityId === accountId)
+          ?.accountName,
+      );
     }),
   );
 }
@@ -284,15 +297,46 @@ function fillInBudgets(
   return budgets;
 }
 
+export function getBudgetNotes(
+  budget: YNAB4.MonthlyBudget,
+  entityIdMap: Map<string, string>,
+): { id: string; note: string }[] {
+  const month = monthUtils.monthFromDate(budget.month);
+  const notes: { id: string; note: string }[] = [];
+
+  if (typeof budget.note === 'string' && budget.note.length > 0) {
+    notes.push({ id: `budget-${month}`, note: budget.note });
+  }
+
+  for (const categoryBudget of budget.monthlySubCategoryBudgets) {
+    const categoryId = entityIdMap.get(categoryBudget.categoryId);
+    if (
+      !categoryBudget.isTombstone &&
+      categoryId &&
+      typeof categoryBudget.note === 'string' &&
+      categoryBudget.note.length > 0
+    ) {
+      notes.push({ id: `${categoryId}-${month}`, note: categoryBudget.note });
+    }
+  }
+
+  return notes;
+}
+
 async function importBudgets(
   data: YNAB4.YFull,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   const budgets = sortByKey(data.monthlyBudgets, 'month');
 
   await send('api/batch-budget-start');
   try {
     for (const budget of budgets) {
+      for (const note of getBudgetNotes(budget, entityIdMap)) {
+        await send('notes-save', note);
+      }
+
       const filled = fillInBudgets(
         data,
         budget.monthlySubCategoryBudgets.filter(b => !b.isTombstone),
@@ -328,6 +372,7 @@ async function importBudgets(
           }
         }),
       );
+      tick();
     }
   } finally {
     await send('api/batch-budget-end');
@@ -345,10 +390,13 @@ function estimateRecentness(str: string) {
   }, 0);
 }
 
-function findLatestDevice(zipped: AdmZip, entries: AdmZip.IZipEntry[]): string {
+function findLatestDevice(
+  zipped: Record<string, Uint8Array>,
+  entries: string[],
+): string {
   let devices = entries
     .map(entry => {
-      const contents = zipped.readFile(entry).toString('utf8');
+      const contents = Buffer.from(zipped[entry]).toString('utf8');
 
       let data;
       try {
@@ -376,22 +424,38 @@ function findLatestDevice(zipped: AdmZip, entries: AdmZip.IZipEntry[]): string {
 export async function doImport(data: YNAB4.YFull) {
   const entityIdMap = new Map<string, string>();
 
-  logger.log('Importing Accounts...');
-  await importAccounts(data, entityIdMap);
-
-  logger.log('Importing Categories...');
-  await importCategories(data, entityIdMap);
-
-  logger.log('Importing Payees...');
-  await importPayees(data, entityIdMap);
-
-  logger.log('Importing Transactions...');
-  await importTransactions(data, entityIdMap);
-
-  logger.log('Importing Budgets...');
-  await importBudgets(data, entityIdMap);
-
-  logger.log('Setting up...');
+  await runImportSteps([
+    {
+      step: 'accounts',
+      total: countLive(data.accounts),
+      run: tick => importAccounts(data, entityIdMap, tick),
+    },
+    {
+      step: 'categories',
+      total:
+        countLive(data.masterCategories) +
+        data.masterCategories.reduce(
+          (count, group) => count + countLive(group.subCategories ?? []),
+          0,
+        ),
+      run: tick => importCategories(data, entityIdMap, tick),
+    },
+    {
+      step: 'payees',
+      total: countLive(data.payees),
+      run: tick => importPayees(data, entityIdMap, tick),
+    },
+    {
+      step: 'transactions',
+      total: data.transactions.length,
+      run: tick => importTransactions(data, entityIdMap, tick),
+    },
+    {
+      step: 'budgets',
+      total: data.monthlyBudgets.length,
+      run: tick => importBudgets(data, entityIdMap, tick),
+    },
+  ]);
 }
 
 export function getBudgetName(filepath) {
@@ -413,8 +477,8 @@ export function getBudgetName(filepath) {
   return m[1];
 }
 
-function getFile(entries: AdmZip.IZipEntry[], path: string) {
-  const files = entries.filter(e => e.entryName === path);
+function getFile(entries: string[], path: string) {
+  const files = entries.filter(e => e === path);
   if (files.length === 0) {
     throw new Error('Could not find file: ' + path);
   }
@@ -434,28 +498,36 @@ function join(...paths: string[]): string {
 }
 
 export function parseFile(buffer: Buffer): YNAB4.YFull {
-  const zipped = new AdmZip(buffer);
-  const entries = zipped.getEntries();
+  let zipped: Record<string, Uint8Array>;
+  try {
+    zipped = safeUnzip(buffer);
+  } catch (e) {
+    logger.log(e);
+    throw new Error('Error reading zip file');
+  }
+  const entries = Object.keys(zipped);
 
   let root = '';
-  const dirMatch = entries[0].entryName.match(/([^/]*\.ynab4)/);
+  const dirMatch = entries[0].match(/([^/]*\.ynab4)/);
   if (dirMatch) {
     root = dirMatch[1] + '/';
   }
 
-  const metaStr = zipped.readFile(getFile(entries, root + 'Budget.ymeta'));
+  const metaStr = Buffer.from(zipped[getFile(entries, root + 'Budget.ymeta')]);
   const meta = JSON.parse(metaStr.toString('utf8'));
   const budgetPath = join(root, meta.relativeDataFolderName);
 
   const deviceFiles = entries.filter(e =>
-    e.entryName.startsWith(join(budgetPath, 'devices')),
+    e.startsWith(join(budgetPath, 'devices')),
   );
   const deviceGUID = findLatestDevice(zipped, deviceFiles);
 
   const yfullPath = join(budgetPath, deviceGUID, 'Budget.yfull');
   let contents;
   try {
-    contents = zipped.readFile(getFile(entries, yfullPath)).toString('utf8');
+    contents = Buffer.from(zipped[getFile(entries, yfullPath)]).toString(
+      'utf8',
+    );
   } catch (e) {
     logger.log(e);
     throw new Error('Error reading Budget.yfull file');
@@ -466,4 +538,8 @@ export function parseFile(buffer: Buffer): YNAB4.YFull {
   } catch {
     throw new Error('Error parsing Budget.yfull file');
   }
+}
+
+function countLive(entities: { isTombstone?: boolean }[]) {
+  return entities.filter(entity => !entity.isTombstone).length;
 }

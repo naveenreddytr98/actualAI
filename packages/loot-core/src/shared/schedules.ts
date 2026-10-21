@@ -1,20 +1,59 @@
 // @ts-strict-ignore
 import type { IRuleOptions } from '@rschedule/core';
 import * as d from 'date-fns';
-import type { Locale } from 'date-fns';
-import { t } from 'i18next';
 
 import { Condition } from '#server/rules';
-import type { PayeeEntity, RecurConfig, ScheduleEntity } from '#types/models';
+import type { RuleConditionEntity, ScheduleEntity } from '#types/models';
 
 import * as monthUtils from './months';
 import { q } from './query';
+
+export const DEFAULT_UPCOMING_SCHEDULE_DAYS = '7';
+
+// Preset token values used by UI selects. Keep labels in the UI (i18n) but
+// centralize the canonical preset tokens so all components share the same set.
+export const UPCOMING_LENGTH_PRESET_VALUES = [
+  '1',
+  '7',
+  '14',
+  'oneMonth',
+  'currentMonth',
+] as const;
+
+export type UpcomingLengthPresetValue =
+  (typeof UPCOMING_LENGTH_PRESET_VALUES)[number];
+
+export const UPCOMING_LENGTH_PRESET_LABELS: Record<
+  UpcomingLengthPresetValue,
+  string
+> = {
+  '1': '1 day',
+  '7': '1 week',
+  '14': '2 weeks',
+  oneMonth: '1 month',
+  currentMonth: 'End of the current month',
+};
+
+export const UPCOMING_LENGTH_PRESET_OPTIONS: {
+  value: UpcomingLengthPresetValue;
+  labelKey: string;
+}[] = UPCOMING_LENGTH_PRESET_VALUES.map(v => ({
+  value: v,
+  labelKey: UPCOMING_LENGTH_PRESET_LABELS[v],
+}));
+
+export function isCustomUpcomingLength(value: string | null | undefined) {
+  if (value == null) return false;
+  return (
+    (UPCOMING_LENGTH_PRESET_VALUES as readonly string[]).indexOf(value) === -1
+  );
+}
 
 export function getStatus(
   nextDate: string,
   completed: boolean,
   hasTrans: boolean,
-  upcomingLength: string = '7',
+  upcomingLength: string = DEFAULT_UPCOMING_SCHEDULE_DAYS,
 ) {
   const upcomingDays = getUpcomingDays(upcomingLength);
   const today = monthUtils.currentDay();
@@ -36,233 +75,121 @@ export function getStatus(
   }
 }
 
-export function getStatusLabel(status: string) {
-  switch (status) {
-    case 'completed':
-      return t('completed');
-    case 'paid':
-      return t('paid');
-    case 'due':
-      return t('due');
-    case 'upcoming':
-      return t('upcoming');
-    case 'missed':
-      return t('missed');
-    case 'scheduled':
-      return t('scheduled');
-    default:
-      return t('unknown');
+export type ScheduleOccurrenceMatchInput = {
+  posts_transaction?: boolean;
+  _conditions?: RuleConditionEntity[];
+};
+
+/**
+ * Lower bound for matching a posted transaction to a schedule occurrence date.
+ *
+ * Used by getHasTransactionsQuery for `next_date` (lower bound only). Forecast
+ * occurrence dedup also applies an upper bound of `occurrenceDate`; see
+ * isScheduleOccurrencePosted.
+ */
+export function getScheduleOccurrenceMatchStartDate(
+  schedule: ScheduleOccurrenceMatchInput,
+  occurrenceDate: string,
+): string {
+  const dateCond = schedule._conditions?.find(c => c.field === 'date');
+  if (dateCond?.op === 'is') {
+    return occurrenceDate;
   }
+  if (schedule.posts_transaction) {
+    return occurrenceDate;
+  }
+  return monthUtils.subDays(occurrenceDate, 2);
+}
+
+export type PostedScheduleTransaction = {
+  schedule?: string | null;
+  date: string;
+};
+
+export function indexPostedScheduleTransactions(
+  transactions: PostedScheduleTransaction[],
+): Map<string, PostedScheduleTransaction[]> {
+  const byScheduleId = new Map<string, PostedScheduleTransaction[]>();
+
+  for (const transaction of transactions) {
+    if (!transaction.schedule) {
+      continue;
+    }
+
+    const existing = byScheduleId.get(transaction.schedule);
+    if (existing) {
+      existing.push(transaction);
+    } else {
+      byScheduleId.set(transaction.schedule, [transaction]);
+    }
+  }
+
+  return byScheduleId;
+}
+
+export function isScheduleOccurrencePosted({
+  schedule,
+  scheduleId,
+  occurrenceDate,
+  postedTransactions,
+}: {
+  schedule: ScheduleOccurrenceMatchInput;
+  scheduleId: string;
+  occurrenceDate: string;
+  postedTransactions: PostedScheduleTransaction[];
+}): boolean {
+  const matchStartDate = getScheduleOccurrenceMatchStartDate(
+    schedule,
+    occurrenceDate,
+  );
+
+  return postedTransactions.some(
+    tx =>
+      tx.schedule === scheduleId &&
+      tx.date >= matchStartDate &&
+      tx.date <= occurrenceDate,
+  );
 }
 
 /**
  * Builds a query to check if each schedule already has a matching transaction.
  *
  * The date lower-bound varies:
- * - `dateCond.op === 'is'` (one-time): exact `next_date`, no lookback.
+ * - `dateCond.op === 'is'` (one-time or recurring): exact `next_date`, no lookback.
  * - `posts_transaction` (auto-posted recurring): exact `next_date`, since
  *   auto-posted dates are always precise. A lookback here would cause
  *   yesterday's transaction to falsely match today's occurrence.
- * - Otherwise (manual recurring): 2-day lookback to catch early payments.
+ * - Otherwise (manual recurring with `isapprox`, etc.): 2-day lookback to catch
+ *   early payments.
  */
 export function getHasTransactionsQuery(schedules) {
   const filters = schedules.map(schedule => {
-    const dateCond = schedule._conditions?.find(c => c.field === 'date');
     return {
       $and: {
         schedule: schedule.id,
         date: {
-          $gte:
-            dateCond && dateCond.op === 'is'
-              ? schedule.next_date
-              : schedule.posts_transaction
-                ? schedule.next_date
-                : monthUtils.subDays(schedule.next_date, 2),
+          $gte: getScheduleOccurrenceMatchStartDate(
+            schedule,
+            schedule.next_date,
+          ),
         },
       },
     };
   });
 
-  return q('transactions')
+  const query = q('transactions')
     .options({ splits: 'all' })
-    .filter({ $or: filters })
     .orderBy({ date: 'desc' })
     .select(['schedule', 'date']);
-}
 
-function makeNumberSuffix(num: number, locale: Locale) {
-  // Slight abuse of date-fns to turn a number like "1" into the full
-  // form "1st" but formatting a date with that number
-  return monthUtils.format(new Date(2020, 0, num, 12), 'do', locale);
-}
-
-function prettyDayName(day) {
-  const days = {
-    SU: t('Sunday'),
-    MO: t('Monday'),
-    TU: t('Tuesday'),
-    WE: t('Wednesday'),
-    TH: t('Thursday'),
-    FR: t('Friday'),
-    SA: t('Saturday'),
-  };
-  return days[day];
-}
-
-export function getRecurringDescription(
-  config: RecurConfig,
-  dateFormat: string,
-  locale: Locale,
-) {
-  const interval = config.interval || 1;
-
-  let endModeSuffix = '';
-  switch (config.endMode) {
-    case 'after_n_occurrences':
-      if (config.endOccurrences === 1) {
-        endModeSuffix = t('once');
-      } else {
-        endModeSuffix = t('{{endOccurrences}} times', {
-          endOccurrences: config.endOccurrences,
-        });
-      }
-      break;
-    case 'on_date':
-      endModeSuffix = t('until {{dateFormatted}}', {
-        dateFormatted: monthUtils.format(config.endDate, dateFormat),
-      });
-      break;
-    default:
-      break;
+  // An empty `$or` compiles away to no constraint at all (`WHERE 1`), which
+  // would scan every transaction in the budget to answer a question about zero
+  // schedules. Match nothing instead — `id` is a primary key and never null.
+  if (filters.length === 0) {
+    return query.filter({ id: null });
   }
 
-  const weekendSolveModeString = config.weekendSolveMode
-    ? config.weekendSolveMode === 'after'
-      ? t('(after weekend)')
-      : t('(before weekend)')
-    : '';
-
-  const weekendSolveSuffix = config.skipWeekend ? weekendSolveModeString : '';
-  const suffix = endModeSuffix
-    ? `, ${endModeSuffix} ${weekendSolveSuffix}`
-    : `${weekendSolveSuffix}`;
-
-  let desc = null;
-
-  switch (config.frequency) {
-    case 'daily':
-      desc =
-        interval !== 1
-          ? t(`Every {{interval}} days`, { interval })
-          : t('Every day');
-      break;
-    case 'weekly':
-      desc =
-        interval !== 1
-          ? t(`Every {{interval}} weeks on {{dateFormatted}}`, {
-              interval,
-              dateFormatted: monthUtils.format(config.start, 'EEEE', locale),
-            })
-          : t('Every week on {{dateFormatted}}', {
-              dateFormatted: monthUtils.format(config.start, 'EEEE', locale),
-            });
-      break;
-    case 'monthly':
-      if (config.patterns && config.patterns.length > 0) {
-        // Sort the days ascending. We filter out -1 because that
-        // represents "last days" and should always be last, but this
-        // sort would put them first
-        let patterns = [...config.patterns]
-          .sort((p1, p2) => {
-            const typeOrder =
-              (p1.type === 'day' ? 1 : 0) - (p2.type === 'day' ? 1 : 0);
-            const valOrder = p1.value - p2.value;
-
-            if (typeOrder === 0) {
-              return valOrder;
-            }
-            return typeOrder;
-          })
-          .filter(p => p.value !== -1);
-
-        // Add on all -1 values to the end
-        patterns = patterns.concat(config.patterns.filter(p => p.value === -1));
-
-        const strs: string[] = [];
-
-        const uniqueDays = new Set(patterns.map(p => p.type));
-        const isSameDay = uniqueDays.size === 1 && !uniqueDays.has('day');
-        for (const pattern of patterns) {
-          if (pattern.type === 'day') {
-            if (pattern.value === -1) {
-              strs.push(t('last day'));
-            } else {
-              // Example: 15th day
-              strs.push(makeNumberSuffix(pattern.value, locale));
-            }
-          } else {
-            const dayName = isSameDay ? '' : ' ' + prettyDayName(pattern.type);
-
-            if (pattern.value === -1) {
-              // Example: last Monday
-              strs.push(t('last') + dayName);
-            } else {
-              // Example: 3rd Monday
-              strs.push(makeNumberSuffix(pattern.value, locale) + dayName);
-            }
-          }
-        }
-
-        let range = '';
-        if (strs.length > 2) {
-          range += strs.slice(0, strs.length - 1).join(', ');
-          range += `, ${t('and')} `;
-          range += strs[strs.length - 1];
-        } else {
-          range += strs.join(` ${t('and')} `);
-        }
-
-        if (isSameDay) {
-          range += ' ' + prettyDayName(patterns[0].type);
-        }
-
-        desc =
-          interval !== 1
-            ? t(`Every {{interval}} months on the {{range}}`, {
-                interval,
-                range,
-              })
-            : t('Every month on the {{range}}', { range });
-      } else {
-        desc =
-          interval !== 1
-            ? t(`Every {{interval}} months on the {{dateFormatted}}`, {
-                interval,
-                dateFormatted: monthUtils.format(config.start, 'do', locale),
-              })
-            : t('Every month on the {{dateFormatted}}', {
-                dateFormatted: monthUtils.format(config.start, 'do', locale),
-              });
-      }
-      break;
-
-    case 'yearly':
-      desc =
-        interval !== 1
-          ? t(`Every {{interval}} years on {{dateFormatted}}`, {
-              interval,
-              dateFormatted: monthUtils.format(config.start, 'LLL do', locale),
-            })
-          : t('Every year on {{dateFormatted}}', {
-              dateFormatted: monthUtils.format(config.start, 'LLL do', locale),
-            });
-      break;
-
-    default:
-      return t('Recurring error');
-  }
-
-  return `${desc}${suffix}`.trim();
+  return query.filter({ $or: filters });
 }
 
 type ScheduleRuleOptions = IRuleOptions & {
@@ -388,6 +315,28 @@ export function getNextDate(
   return null;
 }
 
+const MAX_ADVANCE_ATTEMPTS = 7;
+
+export function getNextDateAfter(dateCond, afterDate: string): string | null {
+  let start = d.subDays(monthUtils.parseDate(afterDate), 1);
+
+  for (let attempt = 0; attempt < MAX_ADVANCE_ATTEMPTS; attempt++) {
+    const occurrence = getNextDate(dateCond, start, true);
+    if (occurrence == null || occurrence < monthUtils.dayFromDate(start)) {
+      return null;
+    }
+
+    const nextDate = getNextDate(dateCond, start);
+    if (nextDate != null && nextDate > afterDate) {
+      return nextDate;
+    }
+
+    start = d.addDays(monthUtils.parseDate(occurrence), 1);
+  }
+
+  return null;
+}
+
 export function getDateWithSkippedWeekend(
   date: Date,
   solveMode: 'after' | 'before',
@@ -419,19 +368,8 @@ export function getScheduledAmount(
   return inverse ? -Math.round(avg) : Math.round(avg);
 }
 
-export function describeSchedule(
-  schedule: ScheduleEntity,
-  payee?: PayeeEntity,
-) {
-  if (payee) {
-    return `${payee.name} (${schedule.next_date})`;
-  } else {
-    return `${t('Next:')} ${schedule.next_date}`;
-  }
-}
-
 export function getUpcomingDays(
-  upcomingLength = '7',
+  upcomingLength = DEFAULT_UPCOMING_SCHEDULE_DAYS,
   today = monthUtils.currentDay(), // for testability
 ): number {
   const month = monthUtils.getMonth(today);

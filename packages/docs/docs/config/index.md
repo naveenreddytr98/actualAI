@@ -2,7 +2,7 @@
 title: Configuring the Server
 ---
 
-When it starts up, Actual looks for an optional `config.json` file in the same directory as the sync-server's `package.json`. If you are [building from source](/docs/install/build-from-source) this will be in `packages/sync-server/`. If present, any keys you define there will override the default values. All values can also be specified as environment variables, which will override the values in the `config.json` file.
+When it starts up, Actual looks for an optional `config.json` file in the same directory as the sync-server's `package.json`. If you are [building from source](../install/build-from-source.md) this will be in `packages/sync-server/`. If present, any keys you define there will override the default values. All values can also be specified as environment variables, which will override the values in the `config.json` file.
 
 :::caution
 Observe that the environmental variables do not map 1:1 to keys in the config.json file. In case of doubt, check the source schema at [/packages/sync-server/src/load-config.js](https://github.com/actualbudget/actual/blob/45530638feaacf74c28fddb846ae91170a99d94e/packages/sync-server/src/load-config.js#L43)
@@ -10,8 +10,12 @@ Observe that the environmental variables do not map 1:1 to keys in the config.js
 
 :::info
 
-Running into issues with your configuration not being interpreted correctly? Check out our documentation for [troubleshooting the server](/docs/troubleshooting/server.md) for information on how to enable debug logging to track down the issue.
+Running into issues with your configuration not being interpreted correctly? Check out our documentation for [troubleshooting the server](../troubleshooting/server.md) for information on how to enable debug logging to track down the issue.
 
+:::
+
+:::tip
+Secrets can be read from a file rather than passed in the environment, which works with Docker secrets and Kubernetes secret volumes. Set `ACTUAL_OPENID_CLIENT_SECRET_FILE` or `ACTUAL_GITHUB_TOKEN_FILE` to the path of a file holding the value. `_FILE`-suffixed environment variables take priority over regular ones. The [CLI](../api/cli.md#environment-variables) supports the same suffix for its own secrets.
 :::
 
 ## `ACTUAL_DATA_DIR` (config.json: `dataDir`)
@@ -57,7 +61,7 @@ If you want Actual to serve over HTTPS, you can set this key to an object with t
 - `cert`: The path to the certificate file. (environment variable: `ACTUAL_HTTPS_CERT`)
 - any other options from Node's [`tls.createServer()`](https://nodejs.org/api/tls.html#tlscreateserveroptions-secureconnectionlistener), [`tls.createSecureContext()`](https://nodejs.org/api/tls.html#tlscreatesecurecontextoptions), or [`http.createServer()`](https://nodejs.org/api/http.html#httpcreateserveroptions-requestlistener) functions (optional, most people won't need to set any of these).
 
-See [Activating HTTPS](/config/https.md) for more information on how to get HTTPS working.
+See [Activating HTTPS](./https.md) for more information on how to get HTTPS working.
 
 <!-- ## `mode`
 
@@ -110,3 +114,17 @@ Updates the servers request forwarding trust to remove known proxy IPs from the 
 ## `trustedAuthProxies`
 
 Configure the clients that are allowed to authenticate with HTTP headers. This defaults to what is set in `trustedProxies`, but can be overridden independently. (environment variable: `ACTUAL_TRUSTED_AUTH_PROXIES`, comma separated string).
+
+## `ACTUAL_SIMPLEFIN_ALLOWED_NETWORKS` (config.json: `simplefinAllowedNetworks`)
+
+SimpleFIN connections to private networks and localhost are blocked by default. If you run a private SimpleFIN bridge, add its IP address or CIDR range to this setting and restart the Actual server. Public SimpleFIN bridges do not need this setting.
+
+Use a comma-separated list in the environment variable, for example `ACTUAL_SIMPLEFIN_ALLOWED_NETWORKS=192.168.1.20,fd12:3456::/64`, or an array in `config.json`:
+
+```json
+{
+  "simplefinAllowedNetworks": ["192.168.1.20", "fd12:3456::/64"]
+}
+```
+
+Prefer a single bridge IP over a whole subnet. Any user who can configure SimpleFIN can cause requests to these addresses, on any port. The setting applies to token claims, account requests, and redirects, including addresses resolved from hostnames. Link-local addresses (including cloud metadata), multicast, and reserved ranges remain blocked even if included in the list.

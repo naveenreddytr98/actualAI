@@ -113,16 +113,19 @@ export class AccountPage {
       category: 'split',
     });
 
+    // Splitting starts with two empty splits
+    const initialSplitCount = 2;
+
     // Child transactions
     for (let i = 0; i < transactions.length; i++) {
+      if (i >= initialSplitCount) {
+        await this.page.getByRole('button', { name: 'Add Split' }).click();
+      }
+
       await this._fillTransactionFields(
         this.newTransactionRow.nth(i + 1),
         transactions[i],
       );
-
-      if (i + 1 < transactions.length) {
-        await this.page.getByRole('button', { name: 'Add Split' }).click();
-      }
     }
 
     await this.addTransactionButton.click();
@@ -156,6 +159,7 @@ export class AccountPage {
       category: row.getByTestId('category'),
       debit: row.getByTestId('debit'),
       credit: row.getByTestId('credit'),
+      balance: row.getByTestId('balance'),
     };
   }
 
@@ -171,6 +175,30 @@ export class AccountPage {
     await this.accountMenuButton.click();
     await this.page.getByRole('button', { name: 'Close Account' }).click();
     return new CloseAccountModal(this.page.getByTestId('close-account-modal'));
+  }
+
+  /**
+   * Open the "Manage table columns" modal from the account menu.
+   */
+  async openTransactionColumnsModal() {
+    await this.accountMenuButton.click();
+    await this.page
+      .getByRole('button', { name: 'Manage table columns' })
+      .click();
+    return this.page.getByTestId('transaction-table-columns-modal');
+  }
+
+  /**
+   * Set one column's visibility via the "Manage table columns" modal.
+   */
+  async setTransactionColumnVisibility(columnId: string, visible: boolean) {
+    const modal = await this.openTransactionColumnsModal();
+    const toggle = modal.locator(`#toggle-column-${columnId}`);
+    if ((await toggle.isChecked()) !== visible) {
+      await modal.locator(`label[for="toggle-column-${columnId}"]`).click();
+    }
+    await modal.getByRole('button', { name: 'Save', exact: true }).click();
+    await modal.waitFor({ state: 'hidden' });
   }
 
   /**
@@ -246,8 +274,7 @@ export class AccountPage {
       const notesCell = transactionRow.getByTestId('notes');
       await notesCell.click();
       const notesInput = notesCell.getByRole('combobox');
-      await this.selectInputText(notesInput);
-      await notesInput.pressSequentially(transaction.notes);
+      await notesInput.fill(transaction.notes);
       await this.page.keyboard.press('Tab');
     }
 
@@ -271,6 +298,10 @@ export class AccountPage {
     if (value) {
       await input.selectText();
     }
+  }
+
+  async rightClickNthTransaction(index: number) {
+    await this.transactionTableRow.nth(index).click({ button: 'right' });
   }
 }
 

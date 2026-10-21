@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 import * as aql from '#server/aql';
 import * as db from '#server/db';
 import type { DbCategory } from '#server/db';
+import * as monthUtils from '#shared/months';
 import { amountToInteger } from '#shared/util';
 import type { CategoryEntity } from '#types/models';
 import type { ByTemplate, Template } from '#types/models/templates';
@@ -14,6 +15,7 @@ import * as statements from './statements';
 
 // Mock getSheetValue and getCategories
 vi.mock('./actions', () => ({
+  getCategoryAverage: vi.fn(),
   getSheetValue: vi.fn(),
   getSheetBoolean: vi.fn(),
   isTrackingBudget: vi.fn(),
@@ -354,6 +356,33 @@ describe('CategoryTemplateContext', () => {
       instance = new TestCategoryTemplateContext([], category, '2024-01', 0, 0);
     });
 
+    it.each(['2023-12-01', '2024-01-01'])(
+      'rejects a stalled date shift in either loop (starting %s)',
+      starting => {
+        const shift = vi.spyOn(monthUtils, 'addDays').mockReturnValue(starting);
+        try {
+          expect(() =>
+            CategoryTemplateContext.runPeriodic(
+              {
+                type: 'periodic',
+                amount: 100,
+                period: { period: 'day', amount: 1 },
+                starting,
+                directive: 'template',
+                priority: 0,
+              },
+              instance,
+            ),
+          ).toThrow(
+            'Infinite loop detected in repeating template, check the repeat interval',
+          );
+          expect(shift).toHaveBeenCalledOnce();
+        } finally {
+          shift.mockRestore();
+        }
+      },
+    );
+
     //5 mondays in January 2024
     it('should calculate weekly amount for single week', () => {
       const template: Template = {
@@ -636,8 +665,11 @@ describe('CategoryTemplateContext', () => {
 
   describe('runAverage', () => {
     let instance: TestCategoryTemplateContext;
+    let originalCurrentMonth: string | null;
 
     beforeEach(() => {
+      originalCurrentMonth = global.currentMonth;
+      global.currentMonth = '2024-02';
       const category: CategoryEntity = {
         id: 'test',
         name: 'Test Category',
@@ -648,6 +680,10 @@ describe('CategoryTemplateContext', () => {
       vi.clearAllMocks();
     });
 
+    afterEach(() => {
+      global.currentMonth = originalCurrentMonth;
+    });
+
     it('should calculate average of 3 months', async () => {
       const template: Template = {
         type: 'average',
@@ -656,16 +692,18 @@ describe('CategoryTemplateContext', () => {
         priority: 1,
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-100) // Dec 2023
-        .mockResolvedValueOnce(-200) // Nov 2023
-        .mockResolvedValueOnce(-300); // Oct 2023
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-200);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
         instance,
       );
       expect(result).toBe(200); // Average of -100, -200, -300
+      expect(actions.getCategoryAverage).toHaveBeenCalledWith({
+        month: '2024-01',
+        maxMonths: 3,
+        categoryId: 'test',
+      });
     });
 
     it('should handle zero amounts', async () => {
@@ -676,10 +714,7 @@ describe('CategoryTemplateContext', () => {
         priority: 1,
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(0)
-        .mockResolvedValueOnce(0)
-        .mockResolvedValueOnce(-300);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-100);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
@@ -696,16 +731,36 @@ describe('CategoryTemplateContext', () => {
         priority: 1,
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(200)
-        .mockResolvedValueOnce(-300);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-(200 / 3));
 
       const result = await CategoryTemplateContext.runAverage(
         template,
         instance,
       );
       expect(result).toBe(67); // Average of -100, 200, -300
+    });
+
+    it('should use the shared average helper with the template range', async () => {
+      const template: Template = {
+        type: 'average',
+        numMonths: 3,
+        directive: 'template',
+        priority: 1,
+      };
+
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-150);
+
+      const result = await CategoryTemplateContext.runAverage(
+        template,
+        instance,
+      );
+
+      expect(result).toBe(150);
+      expect(actions.getCategoryAverage).toHaveBeenCalledWith({
+        month: '2024-01',
+        maxMonths: 3,
+        categoryId: 'test',
+      });
     });
 
     it('should handle positive percent adjustments', async () => {
@@ -718,10 +773,7 @@ describe('CategoryTemplateContext', () => {
         adjustmentType: 'percent',
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-100);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
@@ -740,10 +792,7 @@ describe('CategoryTemplateContext', () => {
         adjustmentType: 'percent',
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-100);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
@@ -761,16 +810,43 @@ describe('CategoryTemplateContext', () => {
         adjustmentType: 'percent',
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-100);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
         instance,
       );
       expect(result).toBe(100);
+    });
+
+    it('should skip the current month and future months', async () => {
+      global.currentMonth = '2024-01';
+      instance = new TestCategoryTemplateContext(
+        [],
+        instance.category,
+        '2024-03',
+        0,
+        0,
+      );
+      const template: Template = {
+        type: 'average',
+        numMonths: 3,
+        directive: 'template',
+        priority: 1,
+      };
+
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-200);
+
+      const result = await CategoryTemplateContext.runAverage(
+        template,
+        instance,
+      );
+      expect(result).toBe(200);
+      expect(actions.getCategoryAverage).toHaveBeenCalledWith({
+        month: '2024-03',
+        maxMonths: 3,
+        categoryId: 'test',
+      });
     });
 
     it('should handle zero amount adjustments', async () => {
@@ -783,10 +859,7 @@ describe('CategoryTemplateContext', () => {
         adjustmentType: 'fixed',
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100)
-        .mockResolvedValueOnce(-100);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-100);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
@@ -805,10 +878,7 @@ describe('CategoryTemplateContext', () => {
         adjustmentType: 'fixed',
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-10000)
-        .mockResolvedValueOnce(-10000)
-        .mockResolvedValueOnce(-10000);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-10000);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
@@ -827,10 +897,7 @@ describe('CategoryTemplateContext', () => {
         adjustmentType: 'fixed',
       };
 
-      vi.mocked(actions.getSheetValue)
-        .mockResolvedValueOnce(-10000)
-        .mockResolvedValueOnce(-10000)
-        .mockResolvedValueOnce(-10000);
+      vi.mocked(actions.getCategoryAverage).mockResolvedValue(-10000);
 
       const result = await CategoryTemplateContext.runAverage(
         template,
@@ -1915,6 +1982,31 @@ describe('CategoryTemplateContext', () => {
       vi.mocked(actions.getSheetValue).mockResolvedValue(0);
       vi.mocked(actions.getSheetBoolean).mockResolvedValue(false);
       vi.mocked(actions.isTrackingBudget).mockReturnValue(false);
+    });
+
+    it.each([
+      0,
+      -1,
+      0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ])('rejects an invalid saved repeat interval (%s)', async interval => {
+      const templates: Template[] = [
+        {
+          type: 'periodic',
+          amount: 100,
+          period: { period: 'day', amount: interval },
+          starting: '2023-12-01',
+          directive: 'template',
+          priority: 0,
+        },
+      ];
+      await expect(
+        CategoryTemplateContext.init(templates, category, '2024-01', 0),
+      ).rejects.toThrow(
+        'Template repeat interval must be a whole number greater than 0',
+      );
     });
 
     it('throws when a schedule template references a non-existent schedule', async () => {

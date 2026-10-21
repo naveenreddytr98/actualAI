@@ -4,11 +4,12 @@ description: Our 3-month trial of paying core maintainers has been a success. We
 date: 2025-10-06T10:00
 slug: continuing-to-reward-contributors
 tags: [announcement]
+in_app_notification: true
 hide_table_of_contents: false
 authors: MatissJanis
 ---
 
-[Three months ago](/blog/spending-community-funds), we launched an experiment: using community donations to directly support the people who keep this project running. The idea was simple — compensate core contributors for the invisible but essential work of reviewing pull requests, triaging issues, and preparing releases.
+[Three months ago](./2025-06-08-spending-community-funds.md), we launched an experiment: using community donations to directly support the people who keep this project running. The idea was simple — compensate core contributors for the invisible but essential work of reviewing pull requests, triaging issues, and preparing releases.
 
 Today, we're excited to share that the trial has been a success. 🎉
 

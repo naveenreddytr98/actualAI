@@ -25,6 +25,13 @@ export const SYNC_PROVIDERS = [
   'simpleFin',
   'pluggyai',
   'enableBanking',
+  'akahu',
 ] as const;
 
 export type BankSyncProviders = (typeof SYNC_PROVIDERS)[number];
+export type BankSyncCredentialSource = 'per-budget-file' | 'global';
+export type BankSyncProviderStatus = {
+  configured?: boolean;
+  source?: BankSyncCredentialSource;
+  error?: string;
+};

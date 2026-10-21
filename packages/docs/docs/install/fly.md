@@ -133,15 +133,15 @@ This will now open Actual so we can start configuring it.
 
 1. Set a password - remember this, you will need it in the future.
 
-   ![](/img/fly/actual-config-1@2x.webp)
+   <img width="498" alt="The Welcome to Actual screen asking you to set a server password" src="/img/install/server-set-password@2x.webp" />
 
-2. You'll see a welcome screen. Either click "Import my budget" to [import your budget from YNAB or the subscription version of Actual](../migration/index.md), or click "Start fresh" to create a blank budget file.
+2. You'll see a welcome screen. Either click "Import my budget" to [import your budget from YNAB or the subscription version of Actual](../migration/index.md), or click "Start budgeting" to create a blank budget file.
 
-   ![](/img/fly/actual-config-2@2x.webp)
+   ![The welcome screen with the Start budgeting button and the Import my budget link](/img/fly/fly-welcome@2x.webp)
 
 3. If everything went well you should then be taken to your very first budget.
 
-   ![](/img/fly/actual-register.webp)
+   ![A new, empty budget](/img/fly/fly-first-budget@2x.webp)
 
 Actual is now up and running. Congratulations! Consider checking out [our tour](../tour/index.md) next.
 
@@ -150,7 +150,7 @@ Actual is now up and running. Congratulations! Consider checking out [our tour](
 When updates to Actual are released, you'll need to re-deploy your app to get the latest version.
 
 ```
-fly deploy --image actualbudget/actual-server:latest --app your-app-name
+fly deploy --image actualbudget/actual-server:latest your-app-name
 ```
 
 ### Local terminal
@@ -167,9 +167,9 @@ If you're looking to lower your monthly compute costs for Actual Budget and can 
 
 ```toml
 [[services]]
-  auto_stop_machines = "stop"
-  auto_start_machines = true
-  min_machines_running = 0
+auto_stop_machines = "stop"
+auto_start_machines = true
+min_machines_running = 0
 ```
 
 With these settings, Fly.io will automatically stop your instance after a few minutes of inactivity. When a new request comes in, the instance will start up again, which may take 5-15 seconds.
@@ -182,4 +182,8 @@ With these settings, Fly.io will automatically stop your instance after a few mi
 
 - **Q.** _How can I try out a beta/unstable version of Actual?_
 
-  **A.** We publish unstable releases of Actual every day. These versions may have known or unknown issues that could corrupt your budget. If you'd like to try them out, follow the [instructions to update](#updating-actual) above, but change `actualbudget/actual-server:latest` to `actualbudget/actual-server:nightly`.
+  **A.** We publish unstable releases of Actual every day. These versions may have known or unknown issues that could corrupt your budget. If you'd like to try them out, re-deploy with the nightly version. For example, if your app is at `https://fly-actual-rushing-waters-9999.fly.dev`:
+
+```
+fly deploy --image actualbudget/actual-server:nightly --app fly-actual-rushing-waters-9999 --remote-only --no-cache
+```

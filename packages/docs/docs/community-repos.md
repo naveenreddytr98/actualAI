@@ -10,7 +10,7 @@ for it to be added, your project must have a proper README file.
 
 ## Bank Export and Importers
 
-The following are implementations of bank syncing using the Actual API. For instructions on using them, see the respective repositories.
+The following are implementations of bank syncing using the Actual API, or converters that turn bank exports into files for Actual's import dialog. For instructions on using them, see the respective repositories.
 
 - **Akahu and Up bank sync to Actual Budget** - https://github.com/tim-smart/actualbudget-sync
 - **Enable Actual: Import transactions from European banks using Enable Banking** - https://github.com/2manyvcos/enable-actual
@@ -18,7 +18,10 @@ The following are implementations of bank syncing using the Actual API. For inst
 - **Lunch Flow: Import transactions from GoCardless, MX, Finicity, Finverse, and more** - https://github.com/lunchflow/actual-flow
 - **MoneyMan an israel banks importer** - https://github.com/daniel-hauser/moneyman
 - **Plaid bank sync** - https://github.com/youngcw/actualplaid
+- **US bank statement converter (BofA, Chase, Citi, Amex CSV and Chase PDF) to Actual-ready CSV** - https://github.com/Ildana-ai/bank2actual
 - **ANZ Plus bank PDF to OFX converter** - [PDFtoOFX](https://github.com/spydisec/PDFtoOFX/)
+- **German DKB and Comdirect banks importer** - https://github.com/FridoE/actual-bank-importer
+- **Indian bank statement converter (CSV, Excel, HTML and PDF) to Actual-ready CSV** - https://github.com/emilgeo/india2actual
 
 ## Other Importers
 
@@ -30,8 +33,10 @@ tracking, loyalty card paybacks, prepaid cards, etc.
 
 ## Budget Migration
 
-Actual currently has official support for migrating budgets from YNAB4 and nYNAB. The following are available for migrating from other budget apps.
+Actual currently has official support for migrating budgets from YNAB4 and nYNAB. The following are available for migrating from YNAB or other budget apps.
 
+- **YNAB Export** - https://github.com/StephenBrown2/ynab-export
+  - _A terminal tool that exports nYNAB budget data as JSON for import into Actual._
 - **MoneyMoney** - https://github.com/NikxDa/actual-moneymoney
 - **Quicken on Mac** - https://github.com/slimslickner/quicken-mac-to-actual-budget
 
@@ -55,8 +60,27 @@ Actual currently has official support for migrating budgets from YNAB4 and nYNAB
   - _A background service that automatically syncs your Actual Budget accounts on a scheduled basis._
 - **Actual Userscripts** - https://github.com/pogman-code/actual-userscripts
   - _A collection of JavaScript/CSS Userscripts for Actual Budget._
+- **Actuali** - https://github.com/MattFaz/actuali
+  - _An iOS app for Actual Budget. Connects directly to your self-hosted Actual server and supports syncing (offline supported), transactions, reports, budgets, iOS Shortcuts, and more. Available on the [App Store](https://apps.apple.com/app/actuali/id6764063765)._
 - **Actual Budget iOS Widget** - https://github.com/TaylorJns/Actual-Budget-iOS-Widget
   - _An iOS widget to display your Actual Budget category balances for the current month. Requires your Actual server to be accessible via HTTPS, and the **Local REST API** community project to be installed._
+- **Actual Bench** - https://github.com/x-rous/actual-bench
+  - _Admin and workbench companion for Actual Budget. Bulk-edit data, manage, merge and diagnose rules, 12-month budget view, snapshot inspection, and ActualQL queries - all changes staged until you save._
+- **actual2ics** - https://github.com/Ildana-ai/actual2ics
+  - _Writes Actual's scheduled transactions to a standard .ics calendar file: rent, payday and the car payment beside everything else you plan around. Read-only, filters by account or schedule, stays current on a cron line without duplicate events._
+- **receipt2actual** - https://github.com/Ildana-ai/receipt2actual
+  - _Pairs receipt files to transactions: copies each receipt into a local folder and writes its path onto the transaction note, so the desktop app opens the file in Finder or Explorer on click. `verify` re-checks every pairing and exits non-zero on any mismatch. No OCR, no cloud, only the note field is written._
+
+## AI Assistant Integrations (MCP)
+
+These servers implement the [Model Context Protocol](https://modelcontextprotocol.io/), letting Claude and other MCP-compatible AI assistants read from (and optionally write to) your Actual budget. For setup instructions, see the respective repositories.
+
+- **actual-budget-mcp** - https://github.com/henfrydls/actual-budget-mcp
+  - _Connect Actual to Claude and other AI assistants. Ask about your budget in plain language, get spending analysis and projections, and create, edit, or delete transactions. Deletions wait for your confirmation, and an optional read-only mode hides the write tools entirely._
+- **actual-mcp** - https://github.com/s-stefanov/actual-mcp
+  - _Lets Claude and other LLM assistants query your accounts, transactions and reports (spending by category or payee, budget vs. actual, net worth, cash flow, trends). Read-only by default; the `--enable-write` flag adds tools to manage transactions, categories, payees, rules, custom reports and dashboards. Runs over stdio or HTTP (with optional bearer-token auth), via npx or Docker._
+- **actual-mcp-server** - https://github.com/agigante80/actual-mcp-server
+  - _Broad coverage of the Actual API, including transactions and splits, transfers, budgets, schedules, rules, tags, notes, ActualQL queries and bank sync. Runs locally over stdio for Claude Desktop, or as a remote HTTP server for LibreChat, LobeChat and other clients with bearer-token or OIDC multi-user auth. Supports switching between multiple budgets mid-conversation. Available via npx, Docker or Unraid Community Applications._
 
 ## Others
 

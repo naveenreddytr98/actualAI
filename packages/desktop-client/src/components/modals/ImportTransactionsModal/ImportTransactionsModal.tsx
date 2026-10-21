@@ -5,7 +5,13 @@ import type {
   ReactNode,
   SetStateAction,
 } from 'react';
-import { useCallback, useEffect, useEffectEvent, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { Button, ButtonWithLoading } from '@actual-app/components/button';
@@ -161,6 +167,41 @@ function getInitialMappings(transactions) {
   };
 }
 
+type LastParse = {
+  filename: string;
+  fileType: string;
+  options: ParseFileOptions;
+};
+
+const parseOptionKeys = [
+  'hasHeaderRow',
+  'delimiter',
+  'encoding',
+  'fallbackMissingPayeeToMemo',
+  'swapPayeeAndMemo',
+  'skipStartLines',
+  'skipEndLines',
+  'importNotes',
+] satisfies Array<keyof ParseFileOptions>;
+
+function shouldPreserveImportSettingsForParse(
+  lastParse: LastParse | null,
+  filename: string,
+  fileType: string,
+  options: ParseFileOptions,
+) {
+  return (
+    fileType === 'csv' &&
+    lastParse?.filename === filename &&
+    lastParse.fileType === fileType &&
+    parseOptionKeys.every(key =>
+      key === 'skipEndLines'
+        ? lastParse.options[key] !== options[key]
+        : lastParse.options[key] === options[key],
+    )
+  );
+}
+
 export function ImportTransactionsModal({
   filename: originalFileName,
   accountId,
@@ -202,6 +243,9 @@ export function ImportTransactionsModal({
     prefs[`csv-delimiter-${accountId}`] ||
       (filename.endsWith('.tsv') ? '\t' : ','),
   );
+  const [csvEncoding, setCsvEncoding] = useState(
+    prefs[`csv-encoding-${accountId}`] || 'auto',
+  );
   const [skipStartLines, setSkipStartLines] = useState(
     parseInt(prefs[`csv-skip-start-lines-${accountId}`], 10) || 0,
   );
@@ -239,6 +283,7 @@ export function ImportTransactionsModal({
 
   const [clearOnImport, setClearOnImport] = useState(true);
   const [startDate, setStartDate] = useState('');
+  const lastParseRef = useRef<LastParse | null>(null);
 
   const getImportPreview = useCallback(
     async (
@@ -305,7 +350,6 @@ export function ImportTransactionsModal({
         }
 
         const category_id = parseCategoryFields(trans, categories);
-        trans.category = category_id;
 
         const {
           inflow: _inflow,
@@ -320,6 +364,7 @@ export function ImportTransactionsModal({
         } = trans;
         previewTransactions.push({
           ...finalTransaction,
+          category: category_id,
           date,
           amount: amountToInteger(amount),
           cleared: clearOnImport,
@@ -332,7 +377,11 @@ export function ImportTransactionsModal({
   );
 
   const parse = useCallback(
-    async (filename: string, options: ParseFileOptions) => {
+    async (
+      filename: string,
+      options: ParseFileOptions,
+      { preserveImportSettings = false } = {},
+    ) => {
       setLoadingState('parsing');
 
       const filetype = getFileType(filename);
@@ -367,39 +416,46 @@ export function ImportTransactionsModal({
           message: errors[0].message || 'Internal error',
         });
       } else {
-        if (filetype === 'csv' || filetype === 'qif') {
+        if (
+          !preserveImportSettings &&
+          (filetype === 'csv' || filetype === 'qif')
+        ) {
           const flipAmount =
             String(prefs[`flip-amount-${accountId}-${filetype}`]) === 'true';
           setFlipAmount(flipAmount);
         }
 
         if (filetype === 'csv') {
-          let mappings = prefs[`csv-mappings-${accountId}`];
-          mappings = mappings
-            ? JSON.parse(mappings)
-            : getInitialMappings(transactions);
+          if (!preserveImportSettings) {
+            let mappings = prefs[`csv-mappings-${accountId}`];
+            mappings = mappings
+              ? JSON.parse(mappings)
+              : getInitialMappings(transactions);
 
-          // @ts-expect-error - mappings might not have outflow/inflow properties
-          setFieldMappings(mappings);
+            // @ts-expect-error - mappings might not have outflow/inflow properties
+            setFieldMappings(mappings);
 
-          // Set initial split mode based on any saved mapping
-          // @ts-expect-error - mappings might not have outflow/inflow properties
-          const splitMode = !!(mappings.outflow || mappings.inflow);
-          setSplitMode(splitMode);
+            // Set initial split mode based on any saved mapping
+            // @ts-expect-error - mappings might not have outflow/inflow properties
+            const splitMode = !!(mappings.outflow || mappings.inflow);
+            setSplitMode(splitMode);
 
-          const parseDateFormat =
-            prefs[`parse-date-${accountId}-${filetype}`] ||
-            getInitialDateFormat(transactions, mappings);
-          setParseDateFormat(
-            isDateFormat(parseDateFormat) ? parseDateFormat : null,
-          );
+            const parseDateFormat =
+              prefs[`parse-date-${accountId}-${filetype}`] ||
+              getInitialDateFormat(transactions, mappings);
+            setParseDateFormat(
+              isDateFormat(parseDateFormat) ? parseDateFormat : null,
+            );
+          }
         } else if (filetype === 'qif') {
-          const parseDateFormat =
-            prefs[`parse-date-${accountId}-${filetype}`] ||
-            getInitialDateFormat(transactions, { date: 'date' });
-          setParseDateFormat(
-            isDateFormat(parseDateFormat) ? parseDateFormat : null,
-          );
+          if (!preserveImportSettings) {
+            const parseDateFormat =
+              prefs[`parse-date-${accountId}-${filetype}`] ||
+              getInitialDateFormat(transactions, { date: 'date' });
+            setParseDateFormat(
+              isDateFormat(parseDateFormat) ? parseDateFormat : null,
+            );
+          }
         } else {
           setFieldMappings(null);
           setParseDateFormat(null);
@@ -425,6 +481,7 @@ export function ImportTransactionsModal({
     const fileType = getFileType(originalFileName);
     const parseOptions = getParseOptions(fileType, {
       delimiter,
+      encoding: csvEncoding,
       hasHeaderRow,
       skipStartLines,
       skipEndLines,
@@ -437,11 +494,27 @@ export function ImportTransactionsModal({
         camtSwapPayeeAndMemo,
       ),
     });
+    const lastParse = lastParseRef.current;
+    const shouldPreserveImportSettings = shouldPreserveImportSettingsForParse(
+      lastParse,
+      originalFileName,
+      fileType,
+      parseOptions,
+    );
 
-    void parse(originalFileName, parseOptions);
+    lastParseRef.current = {
+      filename: originalFileName,
+      fileType,
+      options: parseOptions,
+    };
+
+    void parse(originalFileName, parseOptions, {
+      preserveImportSettings: shouldPreserveImportSettings,
+    });
   }, [
     originalFileName,
     delimiter,
+    csvEncoding,
     hasHeaderRow,
     skipStartLines,
     skipEndLines,
@@ -492,6 +565,7 @@ export function ImportTransactionsModal({
     const fileType = getFileType(res[0]);
     const parseOptions = getParseOptions(fileType, {
       delimiter,
+      encoding: csvEncoding,
       hasHeaderRow,
       skipStartLines,
       skipEndLines,
@@ -569,11 +643,11 @@ export function ImportTransactionsModal({
     for (let trans of transactions) {
       if (
         trans.isMatchedTransaction ||
-        (reconcile && !trans.selected && !trans.ignored)
+        (reconcile && !trans.selected && !trans.ignored && !trans.existing)
       ) {
         // skip transactions that are
         // - matched transaction (existing transaction added to show update changes)
-        // - unselected transactions that are not ignored by the reconcilation algorithm (only when reconcilation is enabled)
+        // - unselected transactions that are not ignored or merged by the reconcilation algorithm (only when reconcilation is enabled)
         continue;
       }
 
@@ -607,7 +681,6 @@ export function ImportTransactionsModal({
       }
 
       const category_id = parseCategoryFields(trans, categories);
-      trans.category = category_id;
 
       const {
         inflow: _inflow,
@@ -632,8 +705,15 @@ export function ImportTransactionsModal({
         finalTransaction.forceAddTransaction = true;
       }
 
+      if (reconcile && trans.existing && !trans.selected) {
+        // unselected transactions with existing are still sent, so they keep
+        // their match and the other transactions match as in the preview
+        finalTransaction.skipTransaction = true;
+      }
+
       finalTransactions.push({
         ...finalTransaction,
+        category: category_id,
         date,
         amount: amountToInteger(amount),
         cleared: clearOnImport,
@@ -666,6 +746,7 @@ export function ImportTransactionsModal({
         [`csv-mappings-${accountId}`]: JSON.stringify(fieldMappings),
       });
       savePrefs({ [`csv-delimiter-${accountId}`]: delimiter });
+      savePrefs({ [`csv-encoding-${accountId}`]: csvEncoding });
       savePrefs({ [`csv-has-header-${accountId}`]: String(hasHeaderRow) });
       savePrefs({
         [`csv-skip-start-lines-${accountId}`]: String(skipStartLines),
@@ -1122,6 +1203,34 @@ export function ImportTransactionsModal({
                       />
                     </label>
                     <label
+                      htmlFor="csv-encoding-select"
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        gap: 5,
+                        alignItems: 'baseline',
+                      }}
+                    >
+                      <Trans>Encoding:</Trans>
+                      <Select
+                        id="csv-encoding-select"
+                        options={[
+                          ['auto', t('Auto (detect)')],
+                          ['utf-8', t('UTF-8')],
+                          ['utf-16le', t('UTF-16 LE')],
+                          ['utf-16be', t('UTF-16 BE')],
+                          ['windows-1252', t('Windows-1252')],
+                          ['windows-1250', t('Windows-1250')],
+                          ['iso-8859-2', t('ISO-8859-2')],
+                        ]}
+                        value={csvEncoding}
+                        onChange={value => {
+                          setCsvEncoding(value);
+                        }}
+                        style={{ width: 130 }}
+                      />
+                    </label>
+                    <label
                       htmlFor="csv-skip-start-lines"
                       style={{
                         display: 'flex',
@@ -1288,8 +1397,9 @@ export function ImportTransactionsModal({
 
 function getParseOptions(fileType: string, options: ParseFileOptions = {}) {
   if (fileType === 'csv') {
-    const { delimiter, hasHeaderRow, skipStartLines, skipEndLines } = options;
-    return { delimiter, hasHeaderRow, skipStartLines, skipEndLines };
+    const { delimiter, encoding, hasHeaderRow, skipStartLines, skipEndLines } =
+      options;
+    return { delimiter, encoding, hasHeaderRow, skipStartLines, skipEndLines };
   }
   if (isOfxFile(fileType)) {
     const { fallbackMissingPayeeToMemo, importNotes, swapPayeeAndMemo } =

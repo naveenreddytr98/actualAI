@@ -25,10 +25,28 @@ export const reportModel = {
       }
     }
 
+    if (report.groupBy === 'Tag' && report.balanceType === 'Budgeted') {
+      throw new ValidationError('Budgeted reports cannot be split by tags.');
+    }
+
+    const scope = report.tagScope;
+    if (
+      scope !== undefined &&
+      (scope === null ||
+        !['all', 'selected'].includes(scope.mode) ||
+        (scope.mode === 'selected' &&
+          (!Array.isArray(scope.tagIds) ||
+            scope.tagIds.some(id => typeof id !== 'string'))))
+    ) {
+      throw new ValidationError('Invalid report tag scope.');
+    }
+
     return report;
   },
 
   toJS(row: CustomReportData): CustomReportEntity {
+    const { tagScope, ...metadata } = row.metadata ?? {};
+
     return {
       id: row.id,
       name: row.name ?? '',
@@ -38,6 +56,7 @@ export const reportModel = {
       dateRange: row.date_range,
       mode: row.mode,
       groupBy: row.group_by,
+      tagScope,
       sortBy: row.sort_by,
       interval: row.interval,
       balanceType: row.balance_type,
@@ -46,11 +65,12 @@ export const reportModel = {
       showHiddenCategories: row.show_hidden === 1,
       showUncategorized: row.show_uncategorized === 1,
       trimIntervals: row.trim_intervals === 1,
+      showTrendLines: row.show_trend_lines === 1,
       includeCurrentInterval: row.include_current === 1,
       graphType: row.graph_type,
       conditions: row.conditions ?? [],
       conditionsOp: row.conditions_op ?? 'and',
-      metadata: row.metadata,
+      metadata,
     };
   },
 
@@ -72,10 +92,12 @@ export const reportModel = {
       show_hidden: report.showHiddenCategories ? 1 : 0,
       show_uncategorized: report.showUncategorized ? 1 : 0,
       trim_intervals: report.trimIntervals ? 1 : 0,
+      show_trend_lines: report.showTrendLines ? 1 : 0,
       include_current: report.includeCurrentInterval ? 1 : 0,
       graph_type: report.graphType,
       conditions: report.conditions,
       conditions_op: report.conditionsOp,
+      metadata: { ...report.metadata, tagScope: report.tagScope },
     };
   },
 };

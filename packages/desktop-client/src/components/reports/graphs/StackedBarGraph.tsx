@@ -89,6 +89,25 @@ const CustomTooltip = ({
       );
   }, [payload]);
 
+  const maxTooltipItems = 5;
+
+  const nonZeroItems = useMemo(() => {
+    return items.filter(p => p.value !== 0);
+  }, [items]);
+
+  const visibleItems = useMemo(() => {
+    if (!compact || nonZeroItems.length <= maxTooltipItems) return nonZeroItems;
+
+    const hoveredIndex = nonZeroItems.findIndex(p => tooltip === p.name);
+    if (hoveredIndex >= maxTooltipItems) {
+      return [
+        ...nonZeroItems.slice(0, maxTooltipItems - 1),
+        nonZeroItems[hoveredIndex],
+      ];
+    }
+    return nonZeroItems.slice(0, maxTooltipItems);
+  }, [compact, nonZeroItems, tooltip]);
+
   if (active && items.length) {
     return (
       <div
@@ -107,29 +126,26 @@ const CustomTooltip = ({
             <strong>{label}</strong>
           </div>
           <div style={{ lineHeight: 1.4 }}>
-            {items.map((pay, i) => {
+            {visibleItems.map(pay => {
               const displayName = dataKeyToName.get(pay.name) ?? pay.name;
               return (
-                pay.value !== 0 &&
-                (compact ? i < 5 : true) && (
-                  <AlignedText
-                    key={pay.name}
-                    left={displayName}
-                    right={
-                      <FinancialText>
-                        {format(pay.value, 'financial')}
-                      </FinancialText>
-                    }
-                    style={{
-                      color: pay.color,
-                      textDecoration:
-                        tooltip === pay.name ? 'underline' : 'inherit',
-                    }}
-                  />
-                )
+                <AlignedText
+                  key={pay.name}
+                  left={displayName}
+                  right={
+                    <FinancialText>
+                      {format(pay.value, 'financial')}
+                    </FinancialText>
+                  }
+                  style={{
+                    color: pay.color,
+                    textDecoration:
+                      tooltip === pay.name ? 'underline' : 'inherit',
+                  }}
+                />
               );
             })}
-            {payload.length > 5 && compact && '...'}
+            {compact && nonZeroItems.length > visibleItems.length && '...'}
             <AlignedText
               left={t('Total')}
               right={
@@ -283,13 +299,13 @@ export function StackedBarGraph({
                     }}
                     onMouseEnter={() => {
                       setTooltip(entry.dataKey);
-                      if (!['Group', 'Interval'].includes(groupBy)) {
+                      if (groupBy !== 'Interval') {
                         setPointer('pointer');
                       }
                     }}
                     onClick={e =>
                       ((compact && showTooltip) || !compact) &&
-                      !['Group', 'Interval'].includes(groupBy) &&
+                      groupBy !== 'Interval' &&
                       showActivity({
                         navigate,
                         categories,
@@ -303,6 +319,9 @@ export function StackedBarGraph({
                         endDate: e.payload?.intervalEndDate,
                         field: groupBy.toLowerCase(),
                         id: entry.id,
+                        uncategorizedId: entry.uncategorizedId,
+                        bucketTagNames: entry.bucketTagNames,
+                        scopeTagNames: data.scopeTagNames,
                         interval,
                       })
                     }

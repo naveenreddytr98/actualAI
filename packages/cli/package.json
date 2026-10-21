@@ -1,6 +1,6 @@
 {
   "name": "@actual-app/cli",
-  "version": "26.5.2",
+  "version": "26.10.0",
   "description": "CLI for Actual Budget",
   "license": "MIT",
   "repository": {
@@ -34,17 +34,17 @@
   "dependencies": {
     "@actual-app/api": "workspace:*",
     "cli-table3": "^0.6.5",
-    "commander": "^14.0.3",
-    "cosmiconfig": "^9.0.1",
+    "commander": "^15.0.0",
+    "cosmiconfig": "^10.0.1",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@types/node": "^22.19.17",
+    "@types/node": "^22.20.5",
     "@types/proper-lockfile": "^4",
     "@typescript/native-preview": "beta",
-    "rollup-plugin-visualizer": "^7.0.1",
-    "vite": "^8.0.5",
-    "vitest": "^4.1.2"
+    "rollup-plugin-visualizer": "^7.1.1",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
   },
   "engines": {
     "node": ">=22"

@@ -1,10 +1,9 @@
 # Budget Templates
 
+<ExperimentalFeatureWarning />
+
 :::warning
-This is an **experimental feature**. That means we're still working on finishing it. There may be bugs, missing functionality or incomplete documentation, and we may decide to remove the feature in a future release. If you have any feedback, please [open an issue](https://github.com/actualbudget/actual/issues) or post a message in the Discord.
-:::
-:::warning
-All functionality described here may not be available in the latest stable release. See [Experimental Features](/docs/experimental/) for instructions to enable experimental features. Use the `nightly` images for the latest implementation.
+All functionality described here may not be available in the latest stable release. See [Experimental Features](./index.md) for instructions to enable experimental features. Use the `nightly` images for the latest implementation.
 :::
 
 Budget templates allow you to automate your budgeting step every month.
@@ -31,7 +30,7 @@ Create a template by adding a note to a category and adding a line that contains
 The example below shows the most basic template syntax `#template 72.99`.
 This will budget $ 72.99 when templates are run without having to manually type in the amount.
 
-![How to add a template](/img/goal-template/goal-template-1.webp)
+<img width="724" alt="A category note with the line #template 72.99" src="/img/experimental/goal-templates-note@2x.webp" />
 
 ### How to apply the templates
 
@@ -39,7 +38,7 @@ This will budget $ 72.99 when templates are run without having to manually type 
 
 In the budget month menu you will see the following options:
 
-![Apply options on month level](/img/goal-template/goal-template-2.webp)
+<img width="506" alt="The month menu with the template options highlighted" src="/img/experimental/goal-templates-month-menu@2x.webp" />
 
 - **Check templates** will test all `#template and #goal` lines for proper syntax.
 
@@ -56,20 +55,20 @@ You can also apply selections of templates if you want.
 - **Single Category**: Use the "Overwrite with template" option shown below from the budget field drop-down menu to apply templates to just that category.
   This will overwrite any existing budgeted amount.
 
-![Apply templates to single category](/img/goal-template/apply-template-category.png)
+<img width="724" alt="The budget cell menu with Overwrite with template highlighted" src="/img/experimental/goal-templates-category-menu@2x.webp" />
 
 - **Apply templates to a single category group**: Use the "Overwrite with templates" option shown below from the category group drop-down menu to apply all templates to categories in a specific group.
   It will apply to the month furthest to the left in your budget view if viewing multiple months.
   This will overwrite any existing budgets in the categories in the group.
 
-![Apply templates to a group of categories](/img/goal-template/apply-template-group.png)
+<img width="724" alt="The category group menu with Overwrite with templates highlighted" src="/img/experimental/goal-templates-group-menu@2x.webp" />
 
 ### Goal Indicators
 
 After having run the templates in a given month and category, the status of a respective category goal will be indicated as a text color of the category balance.
 The image below shows an example of categories in the following states: normal (no goal set), empty (no goal set), goal met(green), goal not met(orange), and a negative balance(red).
 
-![Goal indicator colors example](/img/goal-template/templates-colors.webp)
+<img width="724" alt="Category balances in the normal, empty, goal met, goal not met and negative states" src="/img/experimental/goal-templates-indicator-colors@2x.webp" />
 
 This goal value is based on the maximum amount that the templates in a category request to be budgeted.
 
@@ -84,7 +83,7 @@ By default, the goal information displayed in the goal indicator is shown on a m
 If you would like the goal and associated indication color to be based on the category `Balance` instead of the budgeted amount, see the [Goal Directive option](#goal-directive).
 This is a special template that overrides the goal amount and bases the goal indicator on category balance.
 
-![Goal indicator information tooltip](/img/goal-template/goal-indicator.webp)
+<img width="222" alt="The balance tooltip for a long-term goal" src="/img/experimental/goal-templates-goal-tooltip@2x.webp" />
 
 ### Multiple Template Lines
 
@@ -427,12 +426,14 @@ Below is a table of the variations of the Schedule template.
 
 This template allows you to budget based on the average amount spent over a number of months, adding flexibility beyond the menu built-ins (3 months, 6 months).
 
+The average amount spent is calculated from completed months only. This will mean averages for future months will use the same value as the current month, to ensure the average accurately reflects actual spending behavior.
+
 You can also adjust the budgeted amount from the average by a percentage or by a fixed whole number. This functionality may be useful when you want to budget an average, but bump it up or down a bit to account for inflation or to slowly wean off a category you'd like to spend less on. (See also [adjustments](#adjustments))
 
-| Syntax                                                                      | Description                                                                                                                                                                          |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `#template average {number} months`                                         | Budget the average amount spent over the last `{number}` months. Can set the number to any number > 0. Matches the existing option on the budget page but with flexible month ranges |
-| `#template average {number} months [{increase/decrease} {number\|number%}]` | Budget the average amount spent over a period, with an adjustment                                                                                                                    |
+| Syntax                                                                      | Description                                                                                                                                                                                   |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#template average {number} months`                                         | Budget the average amount spent over the last `{number}` complete months. Can set the number to any number > 0. Matches the existing option on the budget page but with flexible month ranges |
+| `#template average {number} months [{increase/decrease} {number\|number%}]` | Budget the average amount spent over a period, with an adjustment                                                                                                                             |
 
 #### Examples
 

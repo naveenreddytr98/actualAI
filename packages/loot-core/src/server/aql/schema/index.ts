@@ -77,6 +77,14 @@ export const schema = {
     account_sync_source: f('string'),
     last_reconciled: f('string'),
     last_sync: f('string'),
+    bank_sync_status: f('string'),
+    account_group_id: f('id', { ref: 'account_groups' }),
+  },
+  account_groups: {
+    id: f('id'),
+    name: f('string'),
+    sort_order: f('float'),
+    tombstone: f('boolean'),
   },
   categories: {
     id: f('id'),
@@ -112,6 +120,7 @@ export const schema = {
     posts_transaction: f('boolean'),
     custom_upcoming_length: f('string'),
     tombstone: f('boolean'),
+    sort_order: f('float'),
 
     // These are special fields that are actually pulled from the
     // underlying rule
@@ -122,6 +131,7 @@ export const schema = {
     _date: f('json/fallback'),
     _conditions: f('json'),
     _actions: f('json'),
+    _has_splits: f('boolean'),
   },
   rules: {
     id: f('id'),
@@ -162,6 +172,7 @@ export const schema = {
     show_hidden: f('integer', { default: 0 }),
     show_uncategorized: f('integer', { default: 0 }),
     trim_intervals: f('integer', { default: 0 }),
+    show_trend_lines: f('integer', { default: 0 }),
     include_current: f('integer', { default: 0 }),
     graph_type: f('string', { default: 'BarGraph' }),
     conditions: f('json'),
@@ -283,6 +294,8 @@ export const schemaConfig: SchemaConfig = {
           ];
         case 'accounts':
           return ['sort_order', 'name'];
+        case 'account_groups':
+          return ['sort_order', 'id'];
         case 'schedules':
           return [{ $condition: { completed: true } }, 'next_date'];
         default:
@@ -341,6 +354,11 @@ export const schemaConfig: SchemaConfig = {
           _date: `json_extract(_rules.conditions, _paths.date || '.value')`,
           _conditions: '_rules.conditions',
           _actions: '_rules.actions',
+          _has_splits: `EXISTS (
+            SELECT 1
+            FROM json_each(_rules.actions) action
+            WHERE json_extract(action.value, '$.options.splitIndex') > 0
+          )`,
         });
 
         return `

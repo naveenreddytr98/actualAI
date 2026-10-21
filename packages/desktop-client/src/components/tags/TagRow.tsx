@@ -1,9 +1,8 @@
 import React, { memo, useRef } from 'react';
+import type { KeyboardEvent } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { SvgArrowThinRight } from '@actual-app/components/icons/v1';
-import { Menu } from '@actual-app/components/menu';
-import { Popover } from '@actual-app/components/popover';
 import { Text } from '@actual-app/components/text';
 import { theme } from '@actual-app/components/theme';
 import type { TagEntity } from '@actual-app/core/types/models';
@@ -18,24 +17,31 @@ import {
 import { useContextMenu } from '#hooks/useContextMenu';
 import { useNavigate } from '#hooks/useNavigate';
 import { useProperFocus } from '#hooks/useProperFocus';
-import { useSelectedDispatch } from '#hooks/useSelected';
-import { useDeleteTagMutation, useUpdateTagMutation } from '#tags';
+import { useSelectedDispatch, useSelectedItems } from '#hooks/useSelected';
+import {
+  useDeleteTagsMutation,
+  useHideTagsMutation,
+  useRenameTagMutation,
+  useUnhideTagsMutation,
+  useUpdateTagMutation,
+} from '#tags';
 
 import { TagEditor } from './TagEditor';
 
 type TagRowProps = {
   tag: TagEntity;
   hovered?: boolean;
-  selected?: boolean;
   onHover: (id?: string) => void;
   focusedField: string | null;
-  onEdit: (id: string, field: string) => void;
+  onEdit: (id: string | null, field?: string) => void;
 };
 
 export const TagRow = memo(
-  ({ tag, hovered, selected, onHover, focusedField, onEdit }: TagRowProps) => {
+  ({ tag, hovered, onHover, focusedField, onEdit }: TagRowProps) => {
     const { t } = useTranslation();
     const dispatchSelected = useSelectedDispatch();
+    const selectedIds = useSelectedItems();
+    const selected = selectedIds.has(tag.id);
     const borderColor = selected ? theme.tableBorderSelected : 'none';
 
     const colorButtonRef = useRef(null);
@@ -44,14 +50,35 @@ export const TagRow = memo(
     useProperFocus(resetButtonRef, focusedField === 'select');
 
     const triggerRef = useRef(null);
-    const { setMenuOpen, menuOpen, handleContextMenu, position } =
-      useContextMenu();
     const navigate = useNavigate();
     const { mutate: updateTag } = useUpdateTagMutation();
-    const { mutate: deleteTag } = useDeleteTagMutation();
+    const { mutate: renameTag } = useRenameTagMutation();
+    const { mutate: deleteTags } = useDeleteTagsMutation();
+    const { mutate: hideTags } = useHideTagsMutation();
+    const { mutate: unhideTags } = useUnhideTagsMutation();
 
     const onUpdate = (description: string) => {
       updateTag({ tag: { ...tag, description } });
+    };
+
+    const onRename = (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed || trimmed === tag.tag) {
+        return;
+      }
+      renameTag({ id: tag.id, tag: trimmed });
+    };
+
+    // Enter must be handled here: the navigator would otherwise move editing
+    // to the next row's tag field, which after the list re-sorts is an
+    // unrelated tag
+    const onRenameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        onRename(e.currentTarget.value);
+        onEdit(null);
+      }
     };
 
     const onShowActivity = () => {
@@ -71,6 +98,38 @@ export const TagRow = memo(
       });
     };
 
+    const contextActionIds = selected ? Array.from(selectedIds) : [tag.id];
+    // The other actions apply to every id above, so renaming — which edits a
+    // single row — is only offered when that is the one tag
+    const isSingleTagAction = contextActionIds.length === 1;
+
+    useContextMenu({
+      triggerRef,
+      items: [
+        isSingleTagAction && {
+          name: 'rename',
+          text: t('Rename'),
+          onClick: () => onEdit(tag.id, 'tag'),
+        },
+        {
+          name: 'delete',
+          text: t('Delete'),
+          onClick: () => deleteTags({ ids: contextActionIds }),
+        },
+        tag.hidden
+          ? {
+              name: 'unhide',
+              text: t('Unhide'),
+              onClick: () => unhideTags({ ids: contextActionIds }),
+            }
+          : {
+              name: 'hide',
+              text: t('Hide'),
+              onClick: () => hideTags({ ids: contextActionIds }),
+            },
+      ],
+    });
+
     return (
       <Row
         ref={triggerRef}
@@ -86,37 +145,7 @@ export const TagRow = memo(
         collapsed
         onMouseEnter={() => onHover(tag.id)}
         onMouseLeave={() => onHover()}
-        onContextMenu={handleContextMenu}
       >
-        <Popover
-          triggerRef={triggerRef}
-          placement="bottom start"
-          isOpen={menuOpen}
-          onOpenChange={() => setMenuOpen(false)}
-          {...position}
-          style={{ width: 200, margin: 1 }}
-          isNonModal
-        >
-          <Menu
-            items={[
-              {
-                name: 'delete',
-                text: t('Delete'),
-              },
-            ]}
-            onMenuSelect={name => {
-              switch (name) {
-                case 'delete':
-                  deleteTag({ id: tag.id });
-                  break;
-                default:
-                  throw new Error(`Unrecognized menu option: ${String(name)}`);
-              }
-              setMenuOpen(false);
-            }}
-          />
-        </Popover>
-
         <SelectCell
           exposed={hovered || selected || focusedField === 'select'}
           focused={focusedField === 'select'}
@@ -130,9 +159,23 @@ export const TagRow = memo(
           selected={selected}
         />
 
-        <Cell width={250} plain style={{ padding: '5px', display: 'block' }}>
-          <TagEditor tag={tag} ref={colorButtonRef} />
-        </Cell>
+        {focusedField === 'tag' ? (
+          <InputCell
+            width={250}
+            name="tag"
+            textAlign="flex"
+            exposed
+            value={tag.tag}
+            inputProps={{
+              onUpdate: onRename,
+              onKeyDownCapture: onRenameKeyDown,
+            }}
+          />
+        ) : (
+          <Cell width={250} plain style={{ padding: '5px', display: 'block' }}>
+            <TagEditor tag={tag} ref={colorButtonRef} />
+          </Cell>
+        )}
 
         <InputCell
           width="flex"
@@ -141,11 +184,11 @@ export const TagRow = memo(
           exposed={focusedField === 'description'}
           onExpose={name => onEdit(tag.id, name)}
           value={tag.description || t('No description')}
-          valueStyle={
-            tag.description
-              ? {}
-              : { fontStyle: 'italic', color: theme.tableTextLight }
-          }
+          valueStyle={{
+            opacity: tag.hidden ? 0.5 : undefined,
+            fontStyle: !tag.description ? 'italic' : undefined,
+            color: !tag.description ? theme.tableTextLight : undefined,
+          }}
           inputProps={{
             value: tag.description || '',
             onUpdate,
@@ -163,6 +206,7 @@ export const TagRow = memo(
               color: theme.noticeTextDark,
               fontSize: 12,
               cursor: 'pointer',
+              opacity: tag.hidden ? 0.5 : undefined,
               ':hover': { backgroundColor: theme.noticeBackgroundLight },
             }}
             onSelect={onShowActivity}

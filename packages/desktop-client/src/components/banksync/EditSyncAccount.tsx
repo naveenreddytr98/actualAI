@@ -45,6 +45,7 @@ const mappableFields: MappableField[] = [
       'booking_date',
       'value_date',
       'transaction_date',
+      'originalDate',
     ],
   },
   {
@@ -70,6 +71,7 @@ const mappableFields: MappableField[] = [
       'creditor.name',
       'debtor.name',
       'account_servicer.name',
+      'meta.other_account',
     ],
   },
   {
@@ -93,6 +95,11 @@ const mappableFields: MappableField[] = [
       'merchant.cnpj',
       'entry_reference',
       'transaction_id',
+      'meta.particulars',
+      'meta.code',
+      'meta.reference',
+      'meta.other_account',
+      'meta.card_suffix',
     ],
   },
 ];
@@ -207,7 +214,7 @@ export function EditSyncAccount({ account }: EditSyncAccountProps) {
             rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
 
-          <Text style={{ fontSize: 15 }}>
+          <Text size="large">
             <Trans>Field mapping</Trans>
           </Text>
 
@@ -219,7 +226,7 @@ export function EditSyncAccount({ account }: EditSyncAccountProps) {
             setMapping={setMapping}
           />
 
-          <Text style={{ fontSize: 15, margin: '1em 0 .5em 0' }}>
+          <Text size="large" style={{ margin: '1em 0 .5em 0' }}>
             <Trans>Options</Trans>
           </Text>
 

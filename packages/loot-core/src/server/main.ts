@@ -8,6 +8,7 @@ import { q } from '#shared/query';
 import { amountToInteger, integerToAmount } from '#shared/util';
 import type { Handlers } from '#types/handlers';
 
+import { app as accountGroupsApp } from './account-groups/app';
 import { app as accountsApp } from './accounts/app';
 import { app as adminApp } from './admin/app';
 import { app as aiApp } from './ai/app';
@@ -20,8 +21,10 @@ import { app as dashboardApp } from './dashboard/app';
 import * as db from './db';
 import * as encryption from './encryption';
 import { app as encryptionApp } from './encryption/app';
+import { DocumentDirError, withErrorCode } from './errors';
 import { app as filtersApp } from './filters/app';
 import { app as forecastApp } from './forecast/app';
+import { app as formulasApp } from './formulas/app';
 import { app } from './main-app';
 import { mutator, runHandler } from './mutators';
 import { app as notesApp } from './notes/app';
@@ -136,12 +139,14 @@ app.combine(
   preferencesApp,
   toolsApp,
   filtersApp,
+  formulasApp,
   forecastApp,
   reportsApp,
   rulesApp,
   adminApp,
   transactionsApp,
   accountsApp,
+  accountGroupsApp,
   payeesApp,
   spreadsheetApp,
   syncApp,
@@ -179,8 +184,33 @@ async function setupDocumentsDir() {
     documentDir = getDefaultDocumentDir();
   }
 
-  await ensureExists(documentDir);
+  try {
+    await ensureExists(documentDir);
+    await ensureUsable(documentDir);
+  } catch (error) {
+    // Surface the exact folder and the filesystem error so the desktop app
+    // can show the user what is blocking startup (e.g. Windows Controlled
+    // Folder Access) instead of hanging on the loading screen.
+    throw new DocumentDirError(documentDir, error);
+  }
   fs._setDocumentDir(documentDir);
+}
+
+// Existence alone isn't enough: the folder may be there but unreadable (no
+// permissions) or unwritable (Windows Controlled Folder Access blocks writes
+// without changing permissions). Fail fast here rather than half-way through
+// loading budgets.
+async function ensureUsable(dir) {
+  await fs.listDir(dir);
+
+  // Unique per run so we never touch (let alone delete) something the user
+  // put there; only the directory this call created is removed.
+  const probeName = `.actual-write-test-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  const probeDir = fs.join(dir, probeName);
+  await fs.mkdir(probeDir);
+  await fs.removeDir(probeDir);
 }
 
 export async function initApp(isDev, socketName) {
@@ -227,6 +257,13 @@ export async function initApp(isDev, socketName) {
 }
 
 type BaseInitConfig = {
+  /**
+   * Directory where budget data is stored. In Node this is a directory on
+   * disk (defaults to the current working directory) and must already exist.
+   * In the browser build it is a path inside the worker's virtual filesystem
+   * (persisted to IndexedDB); it defaults to `/documents` and is created
+   * automatically if missing.
+   */
   dataDir?: string;
   verbose?: boolean;
 };
@@ -291,21 +328,30 @@ export async function init(config: InitConfig) {
       if (!user || user.tokenExpired === true) {
         // Clear invalid token
         await runHandler(handlers['subscribe-set-token'], { token: '' });
-        throw new Error(
-          'Authentication failed: invalid or expired session token',
+        throw withErrorCode(
+          new Error('Authentication failed: invalid or expired session token'),
+          'token-expired',
         );
       }
       if (user.offline === true) {
         // Clear token since we can't validate
         await runHandler(handlers['subscribe-set-token'], { token: '' });
-        throw new Error('Authentication failed: server offline or unreachable');
+        throw withErrorCode(
+          new Error('Authentication failed: server offline or unreachable'),
+          'network-failure',
+        );
       }
     } else if ('password' in config && config.password) {
       const result = await runHandler(handlers['subscribe-sign-in'], {
         password: config.password,
       });
       if (result?.error) {
-        throw new Error(`Authentication failed: ${result.error}`);
+        // `result.error` is already a machine-readable slug (e.g.
+        // 'invalid-password', 'network-failure')
+        throw withErrorCode(
+          new Error(`Authentication failed: ${result.error}`),
+          result.error,
+        );
       }
     }
   } else {

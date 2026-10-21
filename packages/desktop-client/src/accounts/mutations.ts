@@ -4,7 +4,9 @@ import { send } from '@actual-app/core/platform/client/connection';
 import type { SyncResponseWithErrors } from '@actual-app/core/server/accounts/app';
 import type {
   AccountEntity,
+  AccountGroupEntity,
   CategoryEntity,
+  SyncServerAkahuAccount,
   SyncServerEnableBankingAccount,
   SyncServerGoCardlessAccount,
   SyncServerPluggyAiAccount,
@@ -150,7 +152,7 @@ export function useReopenAccountMutation() {
 }
 
 type UpdateAccountPayload = {
-  account: AccountEntity;
+  account: Pick<AccountEntity, 'id'> & Partial<AccountEntity>;
 };
 
 export function useUpdateAccountMutation() {
@@ -178,6 +180,7 @@ export function useUpdateAccountMutation() {
 type MoveAccountPayload = {
   id: AccountEntity['id'];
   targetId: AccountEntity['id'] | null;
+  accountGroupId?: AccountGroupEntity['id'] | null;
 };
 
 export function useMoveAccountMutation() {
@@ -186,8 +189,12 @@ export function useMoveAccountMutation() {
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: async ({ id, targetId }: MoveAccountPayload) => {
-      await send('account-move', { id, targetId });
+    mutationFn: async ({
+      id,
+      targetId,
+      accountGroupId,
+    }: MoveAccountPayload) => {
+      await send('account-move', { id, targetId, accountGroupId });
     },
     onSuccess: () => {
       invalidateQueries(queryClient);
@@ -494,6 +501,46 @@ export function useLinkAccountPluggyAiMutation() {
         t(
           'There was an error linking the account to PluggyAI. Please try again.',
         ),
+        error,
+      );
+    },
+  });
+}
+
+type LinkAccountAkahuPayload = LinkAccountBasePayload & {
+  externalAccount: SyncServerAkahuAccount;
+};
+
+export function useLinkAccountAkahuMutation() {
+  const queryClient = useQueryClient();
+  const dispatch = useDispatch();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: async ({
+      externalAccount,
+      upgradingId,
+      offBudget,
+      startingDate,
+      startingBalance,
+    }: LinkAccountAkahuPayload) => {
+      await send('akahu-accounts-link', {
+        externalAccount,
+        upgradingId,
+        offBudget,
+        startingDate,
+        startingBalance,
+      });
+    },
+    onSuccess: () => {
+      invalidateQueries(queryClient);
+      invalidateQueries(queryClient, payeeQueries.lists());
+    },
+    onError: error => {
+      console.error('Error linking account to Akahu:', error);
+      dispatchErrorNotification(
+        dispatch,
+        t('There was an error linking the account to Akahu. Please try again.'),
         error,
       );
     },

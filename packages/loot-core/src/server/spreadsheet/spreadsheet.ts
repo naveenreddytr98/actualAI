@@ -221,13 +221,17 @@ export class Spreadsheet {
       this.events.emit('change', { names: this.computeQueue });
 
       // Cache the updated cells
-      if (typeof this.saveCache === 'function') {
-        this.saveCache(this.computeQueue);
-      }
+      this.saveCachedCells(this.computeQueue);
       this.markCacheSafe();
 
       this.running = false;
       this.computeQueue = [];
+    }
+  }
+
+  saveCachedCells(names: string[]): void {
+    if (typeof this.saveCache === 'function') {
+      this.saveCache(names);
     }
   }
 
@@ -344,10 +348,12 @@ export class Spreadsheet {
     });
   }
 
-  recomputeAll(): void {
-    // Recompute everything!
+  // Recompute everything, except any cells in `skip` — those are expected to
+  // have already been given their final value with `load`.
+  recomputeAll(skip?: ReadonlySet<string>): void {
     this.transaction(() => {
-      this.dirtyCells = [...this.nodes.keys()];
+      const names = [...this.nodes.keys()];
+      this.dirtyCells = skip ? names.filter(name => !skip.has(name)) : names;
     });
   }
 

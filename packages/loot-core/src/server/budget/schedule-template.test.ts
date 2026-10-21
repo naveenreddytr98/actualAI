@@ -3,8 +3,9 @@ import { Rule } from '#server/rules';
 import { getRuleForSchedule } from '#server/schedules/app';
 import type { Currency } from '#shared/currencies';
 import type { CategoryEntity } from '#types/models';
+import type { ScheduleTemplate } from '#types/models/templates';
 
-import { isTrackingBudget } from './actions';
+import { getSheetValue, isTrackingBudget } from './actions';
 import { runSchedule } from './schedule-template';
 
 vi.mock('#server/db');
@@ -169,7 +170,7 @@ describe('runSchedule', () => {
     expect(result.remainder).toBe(0);
   });
 
-  it('returns a per-template monthly attribution map keyed by trimmed template name', async () => {
+  it('returns a per-template monthly attribution map keyed by template', async () => {
     const template_lines = [
       {
         type: 'schedule',
@@ -196,7 +197,7 @@ describe('runSchedule', () => {
       defaultCurrency,
     );
 
-    expect(result.perScheduleMonthly.get('Test Schedule')).toBe(10000);
+    expect(result.perScheduleMonthly.get(template_lines[0])).toBe(10000);
     expect(result.to_budget).toBe(10000);
   });
 
@@ -237,8 +238,8 @@ describe('runSchedule', () => {
     );
 
     expect(result.errors).toHaveLength(0);
-    const internet = result.perScheduleMonthly.get('Internet') ?? 0;
-    const insurance = result.perScheduleMonthly.get('Insurance') ?? 0;
+    const internet = result.perScheduleMonthly.get(template_lines[0]) ?? 0;
+    const insurance = result.perScheduleMonthly.get(template_lines[1]) ?? 0;
     expect(internet).toBe(10000); // pay-month-of: full target
     expect(insurance).toBeGreaterThan(0);
     expect(insurance).toBeLessThan(internet);
@@ -273,6 +274,50 @@ describe('runSchedule', () => {
       defaultCurrency,
     );
     expect(result.to_budget).toBe(0);
+    expect(result.perScheduleMonthly.get(template_lines[0])).toBeUndefined();
+  });
+
+  it('only attributes contribution to schedules occurring this month when full: true is used', async () => {
+    const template_lines = [
+      {
+        type: 'schedule',
+        name: 'Schedule A',
+        full: true,
+        directive: 'template',
+        priority: 0,
+      } as const,
+      {
+        type: 'schedule',
+        name: 'Schedule B',
+        full: true,
+        directive: 'template',
+        priority: 0,
+      } as const,
+    ];
+    mockSchedulesByName({
+      'Schedule A': {
+        spec: { start: '2024-08-01', amount: -10000, frequency: 'monthly' },
+      },
+      'Schedule B': {
+        spec: { start: '2024-09-01', amount: -20000, frequency: 'monthly' },
+      },
+    });
+
+    const result = await runSchedule(
+      template_lines,
+      '2024-08-01',
+      0,
+      0,
+      0,
+      0,
+      [],
+      defaultCategory,
+      defaultCurrency,
+    );
+
+    expect(result.to_budget).toBe(10000);
+    expect(result.perScheduleMonthly.get(template_lines[0])).toBe(10000);
+    expect(result.perScheduleMonthly.get(template_lines[1])).toBeUndefined();
   });
 
   it('applies a percent adjustment to the schedule amount', async () => {
@@ -580,6 +625,45 @@ describe('runSchedule', () => {
       defaultCurrency,
     );
     expect(result.to_budget).toBe(3000);
+  });
+
+  it('keeps meeting the deadline for a schedule repeating every 360 days', async () => {
+    // Every 360 days is daily in shape but yearly in effect, so it sinks:
+    // $500 due 2026-05-15 spread over the five months from January is $100
+    // a month. Once January is funded, February used to drop to $41.67 --
+    // subDays(2026-05-15, 360) lands in May 2025, and that 12-month span
+    // became the divisor. The deadline and the $100 already saved were both
+    // ignored, so the category came up short in May.
+    const template_lines = [
+      {
+        type: 'schedule',
+        name: 'EveryThreeSixtyDays',
+        directive: 'template',
+        priority: 0,
+      } satisfies ScheduleTemplate,
+    ];
+    mockSingleSchedule({
+      start: '2026-05-15',
+      amount: -50000,
+      frequency: 'daily',
+      interval: 360,
+    });
+    // January budgeted $100 and nothing was spent, so it carries forward and
+    // is also last month's goal.
+    vi.mocked(getSheetValue).mockResolvedValue(10000);
+
+    const result = await runSchedule(
+      template_lines,
+      '2026-02-01',
+      10000,
+      0,
+      10000,
+      0,
+      [],
+      defaultCategory,
+      defaultCurrency,
+    );
+    expect(result.to_budget).toBe(10000);
   });
 
   it('absorbs surplus when last-month balance exceeds a sinking schedule target', async () => {

@@ -3,12 +3,14 @@ import type { Request, Response } from 'express';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 
+import { isAdmin } from '#account-db';
 import { handleError } from '#app-gocardless/util/handle-error';
 import { SecretName, secretsService } from '#services/secrets-service';
 import {
   requestLoggerMiddleware,
   validateSessionMiddleware,
 } from '#util/middlewares';
+import { isBlockedIp } from '#util/ssrf';
 
 import type {
   EnableBankingSession,
@@ -16,11 +18,14 @@ import type {
 } from './services/enablebanking-service';
 import {
   enableBankingService,
+  isImportableTransaction,
   normalizeAccount,
   normalizeBalance,
   normalizeTransaction,
 } from './services/enablebanking-service';
 import { EnableBankingError } from './utils/errors';
+
+const debugSensitive = createDebug('actual-sensitive:enable-banking');
 
 const debug = createDebug('actual:enable-banking:app');
 
@@ -38,16 +43,43 @@ function extractPsuHeaders(req: Request): PsuHeaders {
       ? req.headers['user-agent']
       : undefined;
 
-  const headers: PsuHeaders = {};
-  if (ip) headers['Psu-Ip-Address'] = ip;
-  if (ua) headers['Psu-User-Agent'] = ua;
+  if (!ip || isBlockedIp(ip)) {
+    debug('Skipping PSU headers because PSU IP is local/private');
+    return {};
+  }
+
+  const headers: PsuHeaders = {
+    'Psu-Ip-Address': ip,
+  };
+
+  if (ua) {
+    headers['Psu-User-Agent'] = ua;
+  }
+
+  debug('Using PSU headers for public PSU IP');
+
   return headers;
+}
+
+// Some ASPSPs reject PSU headers on balance/transaction data-access calls even
+// though they require them during the authorization step. List their names here.
+const ASPSPS_WITHOUT_DATA_ACCESS_PSU_HEADERS = new Set(['HypoVereinsbank']);
+
+function dataAccessPsuHeaders(
+  aspspName: string | undefined,
+  psuHeaders: PsuHeaders | undefined,
+): PsuHeaders | undefined {
+  if (aspspName && ASPSPS_WITHOUT_DATA_ACCESS_PSU_HEADERS.has(aspspName)) {
+    return undefined;
+  }
+  return psuHeaders;
 }
 
 async function buildSessionResult(
   session: EnableBankingSession,
   psuHeaders?: PsuHeaders,
 ) {
+  const accessHeaders = dataAccessPsuHeaders(session.aspsp?.name, psuHeaders);
   const accountsWithBalances = await Promise.all(
     session.accounts.map(async account => {
       const normalized = normalizeAccount(account, session.aspsp);
@@ -56,11 +88,16 @@ async function buildSessionResult(
       try {
         const balanceResult = await enableBankingService.getBalances(
           account.uid,
-          psuHeaders,
+          accessHeaders,
         );
         balances = balanceResult.balances.map(normalizeBalance);
       } catch (err) {
-        debug('Failed to fetch balances for account %s: %s', account.uid, err);
+        debug('Failed to fetch account balances');
+        debugSensitive(
+          'Failed to fetch balances for account %s: %O',
+          account.uid,
+          err,
+        );
       }
 
       const preferredBalance =
@@ -108,11 +145,8 @@ app.get('/auth_callback', async (req: Request, res: Response) => {
 
   try {
     const session = await enableBankingService.createSession(code);
-    debug(
-      'Callback session created: %s with %d accounts',
-      session.session_id,
-      session.accounts.length,
-    );
+    debug('Callback session created with %d accounts', session.accounts.length);
+    debugSensitive('Callback session created: %s', session.session_id);
 
     const result = await buildSessionResult(session, extractPsuHeaders(req));
 
@@ -144,7 +178,8 @@ app.get('/auth_callback', async (req: Request, res: Response) => {
       cleanupPendingAuth(state);
     }
 
-    debug('Callback auth error: %s', error);
+    debug('Callback authentication failed');
+    debugSensitive('Callback authentication failed: %O', error);
     res
       .status(500)
       .send(
@@ -201,6 +236,15 @@ app.post(
 app.post(
   '/configure',
   handleError(async (req: Request, res: Response) => {
+    if (!isAdmin(res.locals.user_id)) {
+      res.status(403).send({
+        status: 'error',
+        reason: 'forbidden',
+        details: 'permission-not-found',
+      });
+      return;
+    }
+
     const { applicationId, secretKey } = req.body || {};
 
     if (!applicationId || !secretKey) {
@@ -221,9 +265,14 @@ app.post(
         applicationId,
         secretKey,
       );
-      debug('Enable Banking application validated: %o', appInfo);
+      debug('Enable Banking application validated');
+      debugSensitive('Enable Banking application validated: %O', appInfo);
     } catch (error) {
-      debug('Enable Banking configuration validation failed: %s', error);
+      debug('Enable Banking configuration validation failed');
+      debugSensitive(
+        'Enable Banking configuration validation failed: %O',
+        error,
+      );
       res.send({
         status: 'ok',
         data: {
@@ -273,7 +322,7 @@ app.post(
 app.post(
   '/start-auth',
   handleError(async (req: Request, res: Response) => {
-    const { aspsp, redirectUrl, maxConsentValidity } = req.body || {};
+    const { aspsp, redirectUrl, maxConsentValidity, psuType } = req.body || {};
 
     if (!aspsp || !redirectUrl) {
       res.send({
@@ -294,6 +343,8 @@ app.post(
         redirectUrl,
         state,
         typeof maxConsentValidity === 'number' ? maxConsentValidity : undefined,
+        psuType === 'business' ? 'business' : 'personal',
+        extractPsuHeaders(req),
       );
 
       res.send({
@@ -332,11 +383,8 @@ app.post(
 
     try {
       const session = await enableBankingService.createSession(code);
-      debug(
-        'Session created: %s with %d accounts',
-        session.session_id,
-        session.accounts.length,
-      );
+      debug('Session created with %d accounts', session.accounts.length);
+      debugSensitive('Session created: %s', session.session_id);
 
       const result = await buildSessionResult(session, extractPsuHeaders(req));
 
@@ -476,7 +524,7 @@ app.post(
 app.post(
   '/transactions',
   handleError(async (req: Request, res: Response) => {
-    const { accountId, startDate } = req.body || {};
+    const { accountId, startDate, aspspName } = req.body || {};
 
     if (!accountId || !startDate) {
       res.send({
@@ -489,14 +537,17 @@ app.post(
       return;
     }
 
-    const psuHeaders = extractPsuHeaders(req);
-
     try {
       const dateTo = new Date().toISOString().split('T')[0];
       const dateFrom =
         typeof startDate === 'string'
           ? startDate
           : new Date(startDate).toISOString().split('T')[0];
+
+      const psuHeaders = dataAccessPsuHeaders(
+        aspspName,
+        extractPsuHeaders(req),
+      );
 
       // Fetch balances
       const balanceResult = await enableBankingService.getBalances(
@@ -527,6 +578,20 @@ app.post(
 
       for (const tx of rawTransactions) {
         const normalized = normalizeTransaction(tx);
+
+        // Drop records Actual's client can't insert (empty/non-ISO date or
+        // non-numeric amount) — one of them would otherwise abort the entire
+        // account sync. Pending transactions that carry a date are unaffected.
+        if (!isImportableTransaction(normalized)) {
+          debugSensitive(
+            'Skipping unimportable transaction id=%s date=%s amount=%s',
+            normalized.transactionId,
+            normalized.date,
+            normalized.transactionAmount.amount,
+          );
+          continue;
+        }
+
         all.push(normalized);
         if (normalized.booked) {
           booked.push(normalized);
@@ -548,7 +613,8 @@ app.post(
         },
       });
     } catch (error) {
-      debug('Error fetching transactions: %s', error);
+      debug('Error fetching transactions');
+      debugSensitive('Error fetching transactions: %O', error);
 
       // Return structured error codes so the client can show
       // appropriate UI (e.g. re-auth prompt for expired sessions)

@@ -18,6 +18,7 @@ import * as cleanupGroupActions from './cleanup-groups';
 import * as cleanupActions from './cleanup-template';
 import { storeNoteCleanups } from './cleanup-template-notes';
 import * as goalActions from './goal-template';
+import { sortCategories } from './sort-categories';
 import * as goalNoteActions from './template-notes';
 
 export type BudgetHandlers = {
@@ -51,6 +52,7 @@ export type BudgetHandlers = {
   'category-create': typeof createCategory;
   'category-update': typeof updateCategory;
   'category-move': typeof moveCategory;
+  'categories-sort': typeof sortCategories;
   'category-delete': typeof deleteCategory;
   'get-category-groups': typeof getCategoryGroups;
   'category-group-create': typeof createCategoryGroup;
@@ -147,6 +149,7 @@ app.method('tracking-budget-month', trackingBudgetMonth);
 app.method('category-create', mutator(undoable(createCategory)));
 app.method('category-update', mutator(undoable(updateCategory)));
 app.method('category-move', mutator(undoable(moveCategory)));
+app.method('categories-sort', mutator(undoable(sortCategories)));
 app.method('category-delete', mutator(undoable(deleteCategory)));
 app.method('get-category-groups', getCategoryGroups);
 app.method('category-group-create', mutator(undoable(createCategoryGroup)));
@@ -328,12 +331,22 @@ async function createCategory({
 
 async function updateCategory(category: CategoryEntity): Promise<void> {
   try {
-    await db.updateCategory(
-      categoryModel.toDb({
-        ...category,
-        name: category.name.trim(),
-      }),
-    );
+    // The API types `fields` as a Partial, and db.update() only writes the
+    // keys it is given, so a partial that omits `name` must stay omitted
+    // rather than being trimmed into a TypeError (#8857).
+    const payload = {
+      ...category,
+      ...(category.name !== undefined && { name: category.name.trim() }),
+    };
+    // Convert first so ignored/underscore fields are dropped before we decide
+    // whether anything writable remains (e.g. `{ id, _ignored: true }` → `{ id }`).
+    const update = categoryModel.toDb(payload, { update: true });
+    const hasWritableField = Object.keys(update).some(key => key !== 'id');
+    if (!hasWritableField) {
+      throw APIError('No fields to update');
+    }
+
+    await db.updateCategory(update);
   } catch (e) {
     if (
       e instanceof Error &&

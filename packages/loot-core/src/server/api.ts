@@ -21,18 +21,22 @@ import type { Handlers } from '#types/handlers';
 import type {
   AccountEntity,
   CategoryGroupEntity,
+  RecurConfig,
   ScheduleEntity,
 } from '#types/models';
 import type { ServerHandlers } from '#types/server-handlers';
 
+import type { SyncResponse } from './accounts/app';
 import { addTransactions } from './accounts/sync';
 import {
+  accountGroupModel,
   accountModel,
   budgetModel,
   categoryGroupModel,
   categoryModel,
   payeeModel,
   remoteFileModel,
+  ruleModel,
   scheduleModel,
   tagModel,
 } from './api-models';
@@ -42,9 +46,10 @@ import { isTrackingBudget } from './budget/actions';
 import * as cloudStorage from './cloud-storage';
 import type { RemoteFile } from './cloud-storage';
 import * as db from './db';
-import { APIError } from './errors';
+import { APIError, withErrorCode } from './errors';
 import { runMutator } from './mutators';
 import * as prefs from './prefs';
+import { getScheduleDates } from './schedules/occurrences';
 import * as sheet from './sheet';
 import { batchMessages, setSyncingMode } from './sync';
 
@@ -118,6 +123,41 @@ async function validateExpenseCategory(debug, id) {
   }
 }
 
+function validateDay(name: string, value: string) {
+  if (typeof value !== 'string' || !monthUtils.isValidYearMonthDay(value)) {
+    throw APIError(`Invalid ${name}, use YYYY-MM-DD: ${value}`);
+  }
+}
+
+function validateScheduleDate(date: RecurConfig | string) {
+  if (typeof date === 'string') {
+    validateDay('schedule date', date);
+    return;
+  }
+  if (date == null || typeof date !== 'object') {
+    throw APIError('date must be a YYYY-MM-DD string or a RecurConfig');
+  }
+
+  validateDay('recurrence start date', date.start);
+  if (
+    date.interval != null &&
+    !(Number.isInteger(date.interval) && date.interval > 0)
+  ) {
+    throw APIError(`interval must be a positive integer: ${date.interval}`);
+  }
+  if (date.endMode === 'on_date') {
+    validateDay('recurrence end date', date.endDate);
+  }
+  if (
+    date.endMode === 'after_n_occurrences' &&
+    !(Number.isInteger(date.endOccurrences) && date.endOccurrences > 0)
+  ) {
+    throw APIError(
+      `endOccurrences must be a positive integer: ${date.endOccurrences}`,
+    );
+  }
+}
+
 function checkFileOpen() {
   if (!(prefs.getPrefs() || {}).id) {
     throw APIError('No budget file is open');
@@ -170,7 +210,7 @@ handlers['api/load-budget'] = async function ({ id }) {
     } else {
       connection.send('show-budgets');
 
-      throw new Error(getSyncError(error, id));
+      throw withErrorCode(new Error(getSyncError(error, id)), error);
     }
   }
 };
@@ -189,12 +229,18 @@ handlers['api/download-budget'] = async function ({ syncId, password }) {
   if (!localBudget) {
     const files = await handlers['get-remote-files']();
     if (!files) {
-      throw new Error('Could not get remote files');
+      throw withErrorCode(
+        new Error('Could not get remote files'),
+        'network-failure',
+      );
     }
     const file = files.find(f => f.groupId === syncId);
     if (!file) {
-      throw new Error(
-        `Budget "${syncId}" not found. Check the sync id of your budget in the Advanced section of the settings page.`,
+      throw withErrorCode(
+        new Error(
+          `Budget "${syncId}" not found. Check the sync id of your budget in the Advanced section of the settings page.`,
+        ),
+        'budget-not-found',
       );
     }
 
@@ -206,8 +252,11 @@ handlers['api/download-budget'] = async function ({ syncId, password }) {
   // Set the e2e encryption keys
   if (activeFile.encryptKeyId) {
     if (!password) {
-      throw new Error(
-        `File ${activeFile.name} is encrypted. Please provide a password.`,
+      throw withErrorCode(
+        new Error(
+          `File ${activeFile.name} is encrypted. Please provide a password.`,
+        ),
+        'missing-key',
       );
     }
 
@@ -216,7 +265,10 @@ handlers['api/download-budget'] = async function ({ syncId, password }) {
       password,
     });
     if (result.error) {
-      throw new Error(getTestKeyError(result.error));
+      throw withErrorCode(
+        new Error(getTestKeyError(result.error)),
+        result.error.reason,
+      );
     }
   }
 
@@ -225,7 +277,12 @@ handlers['api/download-budget'] = async function ({ syncId, password }) {
     await handlers['load-budget']({ id: localBudget.id });
     const result = await handlers['sync-budget']();
     if (result.error) {
-      throw new Error(getSyncError(result.error.reason, localBudget.id));
+      throw withErrorCode(
+        new Error(
+          getSyncError(result.error.reason, localBudget.id, result.error.meta),
+        ),
+        result.error.reason,
+      );
     }
     return;
   }
@@ -233,10 +290,14 @@ handlers['api/download-budget'] = async function ({ syncId, password }) {
   // Download the remote file (no need to perform a sync as the file will already be up-to-date)
   const result = await handlers['download-budget']({
     cloudFileId: remoteBudget.fileId,
+    localId: budgets.find(b => b.cloudFileId === remoteBudget.fileId)?.id,
   });
   if (result.error) {
     logger.log('Full error details', result.error);
-    throw new Error(getDownloadError(result.error));
+    throw withErrorCode(
+      new Error(getDownloadError(result.error)),
+      result.error.reason,
+    );
   }
   await handlers['load-budget']({ id: result.id });
 };
@@ -254,20 +315,41 @@ handlers['api/sync'] = async function () {
   const { id } = prefs.getPrefs();
   const result = await handlers['sync-budget']();
   if (result.error) {
-    throw new Error(getSyncError(result.error.reason, id));
+    throw withErrorCode(
+      new Error(getSyncError(result.error.reason, id, result.error.meta)),
+      result.error.reason,
+    );
   }
 };
 
 handlers['api/bank-sync'] = async function (args) {
   const batchSync = args?.accountId == null;
   const allErrors = [];
+  // `accounts-bank-sync` and `simplefin-batch-sync` already reconcile each
+  // account and report what that produced. Collect it here so API consumers can
+  // tell "synced, nothing new" from "synced, transactions are waiting" without
+  // diffing the transaction table themselves.
+  const newTransactions = [];
+  const matchedTransactions = [];
+  const updatedAccounts = [];
+
+  // Appended one at a time rather than spread: these lists are as long as the
+  // sync is big, and spreading a large array into push() passes every element
+  // as an argument. `allErrors` above is bounded by the account count, so it
+  // keeps the spread it already used.
+  const collect = (res: SyncResponse) => {
+    for (const id of res.newTransactions) newTransactions.push(id);
+    for (const id of res.matchedTransactions) matchedTransactions.push(id);
+    for (const id of res.updatedAccounts) updatedAccounts.push(id);
+  };
 
   if (!batchSync) {
-    const { errors } = await handlers['accounts-bank-sync']({
+    const res = await handlers['accounts-bank-sync']({
       ids: [args.accountId],
     });
 
-    allErrors.push(...errors);
+    allErrors.push(...res.errors);
+    collect(res);
   } else {
     const accountsData = await handlers['accounts-get']();
     const accountIdsToSync = accountsData.map(a => a.id);
@@ -276,25 +358,31 @@ handlers['api/bank-sync'] = async function (args) {
     );
     const simpleFinAccountIds = simpleFinAccounts.map(a => a.id);
 
-    if (simpleFinAccounts.length > 1) {
+    if (simpleFinAccounts.length >= 1) {
       const res = await handlers['simplefin-batch-sync']({
         ids: simpleFinAccountIds,
       });
 
-      res.forEach(a => allErrors.push(...a.res.errors));
+      res.forEach(a => {
+        allErrors.push(...a.res.errors);
+        collect(a.res);
+      });
     }
 
-    const { errors } = await handlers['accounts-bank-sync']({
+    const res = await handlers['accounts-bank-sync']({
       ids: accountIdsToSync.filter(a => !simpleFinAccountIds.includes(a)),
     });
 
-    allErrors.push(...errors);
+    allErrors.push(...res.errors);
+    collect(res);
   }
 
   const errors = allErrors.filter(e => e != null);
   if (errors.length > 0) {
-    throw new Error(getBankSyncError(errors[0]));
+    throw withErrorCode(new Error(getBankSyncError(errors[0])), errors[0].code);
   }
+
+  return { newTransactions, matchedTransactions, updatedAccounts };
 };
 
 handlers['api/start-import'] = async function ({ budgetName }) {
@@ -588,6 +676,11 @@ handlers['api/transaction-delete'] = withMutation(async function ({ id }) {
   return handlers['transactions-batch-update'](diff)['deleted'];
 });
 
+handlers['api/transactions-merge'] = withMutation(async function ({ ids }) {
+  checkFileOpen();
+  return handlers['transactions-merge'](ids.map(id => ({ id })));
+});
+
 handlers['api/accounts-get'] = async function () {
   checkFileOpen();
   const accounts: AccountEntity[] = await handlers['accounts-get']();
@@ -646,15 +739,40 @@ handlers['api/account-balance'] = withMutation(async function ({
   return handlers['account-balance']({ id, cutoff });
 });
 
+handlers['api/account-groups-get'] = async function () {
+  checkFileOpen();
+  const groups = await handlers['account-groups-get']();
+  return groups.map(group => accountGroupModel.toExternal(group));
+};
+
+handlers['api/account-group-create'] = withMutation(async function ({ group }) {
+  checkFileOpen();
+  return handlers['account-group-create']({ name: group.name });
+});
+
+handlers['api/account-group-update'] = withMutation(async function ({
+  id,
+  fields,
+}) {
+  checkFileOpen();
+  const group = accountGroupModel.fromExternal(fields);
+  if (group.name == null) {
+    throw APIError('Account group name is required');
+  }
+  return handlers['account-group-update']({ id, name: group.name });
+});
+
+handlers['api/account-group-delete'] = withMutation(async function ({ id }) {
+  checkFileOpen();
+  await handlers['account-group-delete']({ id });
+});
+
 handlers['api/categories-get'] = async function ({
-  grouped,
   hidden,
-}: { grouped?: boolean; hidden?: boolean } = {}) {
+}: { hidden?: boolean } = {}) {
   checkFileOpen();
   const result = await handlers['get-categories']({ hidden });
-  return grouped
-    ? result.grouped.map(group => categoryGroupModel.toExternal(group))
-    : result.list.map(category => categoryModel.toExternal(category));
+  return result.list.map(category => categoryModel.toExternal(category));
 };
 
 handlers['api/category-groups-get'] = async function ({
@@ -842,7 +960,7 @@ handlers['api/payee-rules-get'] = async function ({ id }) {
 
 handlers['api/rule-create'] = withMutation(async function ({ rule }) {
   checkFileOpen();
-  const addedRule = await handlers['rule-add'](rule);
+  const addedRule = await handlers['rule-add'](ruleModel.fromExternal(rule));
 
   if ('error' in addedRule) {
     throw APIError('Failed creating a new rule', addedRule.error);
@@ -853,7 +971,9 @@ handlers['api/rule-create'] = withMutation(async function ({ rule }) {
 
 handlers['api/rule-update'] = withMutation(async function ({ rule }) {
   checkFileOpen();
-  const updatedRule = await handlers['rule-update'](rule);
+  const updatedRule = await handlers['rule-update'](
+    ruleModel.fromExternal(rule),
+  );
 
   if ('error' in updatedRule) {
     throw APIError('Failed updating the rule', updatedRule.error);
@@ -872,6 +992,31 @@ handlers['api/schedules-get'] = async function () {
   const { data } = await aqlQuery(q('schedules').select('*'));
   const schedules = data as ScheduleEntity[];
   return schedules.map(schedule => scheduleModel.toExternal(schedule));
+};
+
+handlers['api/schedule-dates-get'] = async function ({
+  date,
+  start = monthUtils.currentDay(),
+  end,
+  count,
+}) {
+  validateScheduleDate(date);
+  validateDay('start date', start);
+  if (end != null) {
+    validateDay('end date', end);
+    if (end < start) {
+      throw APIError(`end (${end}) is before start (${start})`);
+    }
+  }
+  if (count != null && !(Number.isInteger(count) && count >= 0)) {
+    throw APIError(`count must be a non-negative integer: ${count}`);
+  }
+
+  try {
+    return getScheduleDates(date, { start, end, count });
+  } catch (error) {
+    throw APIError(`Cannot expand schedule date: ${error.message}`);
+  }
 };
 
 handlers['api/schedule-create'] = withMutation(async function (
@@ -1055,7 +1200,6 @@ handlers['api/get-id-by-name'] = async function ({ type, name }) {
 };
 
 handlers['api/get-server-version'] = async function () {
-  checkFileOpen();
   return handlers['get-server-version']();
 };
 

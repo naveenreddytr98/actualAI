@@ -157,6 +157,40 @@ If you have never used Markdown, please consult [CommonMark](https://commonmark.
 [Docusaurus Markdown Features](https://docusaurus.io/docs/markdown-features) guide. You can learn more about Markdown in
 [The Markdown Guide](https://www.markdownguide.org/).
 
+### Linking Between Pages
+
+When linking from one documentation page to another, use a relative file path that includes the `.md` extension, not the page's URL:
+
+```markdown
+Read our [Starting Fresh](../getting-started/starting-fresh.md) guide.
+```
+
+instead of
+
+```markdown
+Read our [Starting Fresh](/docs/getting-started/starting-fresh) guide.
+```
+
+Docusaurus resolves file paths at build time and converts them to the published URLs, so links that point at a missing file or heading fail the build (`onBrokenLinks` and `onBrokenAnchors` are both set to `throw`) instead of silently breaking for readers. When linking to a specific section, place the anchor after the extension: `../api/reference.md#importtransactions`.
+
+Blog posts and the standalone pages in `src/pages/` live outside the `docs/` folder and can't reference documentation by file path. Use relative URLs from those files instead, for example `../../docs/install/` from a blog post.
+
+### Blog Posts in the App
+
+Actual has an in-app Notifications page built from the blog. Release posts are included automatically (the release tooling marks them); any other post is only shown there when you opt in by adding `in_app_notification: true` to its front matter:
+
+```markdown
+---
+title: Design Competition Winner
+tags: [announcement]
+in_app_notification: true
+---
+```
+
+Posts without it stay on the website only, so use it for announcements the whole community should see and leave it off how-to articles and other evergreen content.
+
+The feed itself is the generated file `packages/desktop-client/src/data/news.json`. CI regenerates and commits it on your pull request, so check that the entry for your post looks right there; you can also run `yarn generate:news-feed` locally.
+
 ### Keyboard Shortcuts
 
 ```markdown
@@ -241,12 +275,10 @@ Place the content inside the details-tags.
 
 ## How To Fix Spelling Errors
 
-As part of the build process, GitHub actions runs a spell checker bot on the documentation. If the bot finds any spelling error, it will be reported in the build output on GitHub. You must fix this by editing the file and correcting the spelling error.
+As part of the build process, GitHub Actions runs a spell checker ([typos](https://github.com/crate-ci/typos)) on the documentation. If it finds any spelling error, it will be reported in the build output on GitHub. You must fix this by editing the file and correcting the spelling error.
 
-![Image of spelling bot error](/img/repo/spellingbot-example.webp)
-
-If the bot mistakes a word, you can add it to the `/.github/actions/spelling/allow/keywords.txt` file.
-This will prevent the bot from reporting this word as a spelling error in the future.
+If the checker mistakes a word, you can allow it by adding it to the `[default.extend-words]` section of `/.github/actions/docs-spelling/typos.toml`, mapped to itself (for example `HSA = "HSA"`).
+This will prevent it from being reported as a spelling error in the future.
 
 ## Naming Standards
 

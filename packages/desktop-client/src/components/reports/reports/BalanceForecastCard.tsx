@@ -17,6 +17,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
+  YAxis,
 } from 'recharts';
 
 import { PrivacyFilter } from '#components/PrivacyFilter';
@@ -26,13 +27,14 @@ import { LoadingIndicator } from '#components/reports/LoadingIndicator';
 import { ReportCard } from '#components/reports/ReportCard';
 import { ReportCardName } from '#components/reports/ReportCardName';
 import { calculateTimeRange } from '#components/reports/reportRanges';
-import { useDashboardWidgetCopyMenu } from '#components/reports/useDashboardWidgetCopyMenu';
 import { useBalanceForecast } from '#hooks/useBalanceForecast';
 import { useFormat } from '#hooks/useFormat';
+import { useSyncedPref } from '#hooks/useSyncedPref';
 
 import {
   buildBalanceForecastChartData,
   countForecastScheduledOccurrences,
+  getLowestChartDataPoint,
   getZeroCrossingGradientOffset,
 } from './balanceForecastChartData';
 
@@ -42,8 +44,6 @@ type BalanceForecastCardProps = {
   accounts: AccountEntity[];
   meta?: BalanceForecastWidget['meta'];
   onMetaChange: (newMeta: BalanceForecastWidget['meta']) => void;
-  onRemove: () => void;
-  onCopy: (targetDashboardId: string) => void;
 };
 
 export function BalanceForecastCard({
@@ -52,14 +52,17 @@ export function BalanceForecastCard({
   accounts,
   meta,
   onMetaChange,
-  onRemove,
-  onCopy,
 }: BalanceForecastCardProps) {
   const { t } = useTranslation();
   const format = useFormat();
-
-  const { menuItems: copyMenuItems, handleMenuSelect: handleCopyMenuSelect } =
-    useDashboardWidgetCopyMenu(onCopy);
+  const [budgetTypePref] = useSyncedPref('budgetType');
+  const budgetType = budgetTypePref === 'tracking' ? 'tracking' : 'envelope';
+  const source =
+    meta?.source === 'tracking-budget' && budgetType === 'tracking'
+      ? 'tracking-budget'
+      : 'schedules';
+  const isTrackingBudgetForecast = source === 'tracking-budget';
+  const granularity = meta?.granularity || 'Monthly';
 
   const [nameMenuOpen, setNameMenuOpen] = useState(false);
   const [isCardHovered, setIsCardHovered] = useState(false);
@@ -77,8 +80,11 @@ export function BalanceForecastCard({
     [accounts, meta?.accounts],
   );
 
-  const startDate = start + '-01';
+  // `start` may be `yyyy-MM` or `yyyy-MM-dd`; `firstDayOfMonth` handles both.
+  const startDate = monthUtils.firstDayOfMonth(start);
   const endDate = monthUtils.lastDayOfMonth(end);
+
+  const yAxisBase = meta?.yAxisBase ?? 'Auto';
 
   const {
     data: forecastData,
@@ -87,12 +93,15 @@ export function BalanceForecastCard({
     isPlaceholderData,
     isPending: isLoading,
   } = useBalanceForecast({
-    accountIds: selectedAccountIds,
-    conditions: meta?.conditions,
-    conditionsOp: meta?.conditionsOp,
+    accountIds: isTrackingBudgetForecast ? undefined : selectedAccountIds,
+    conditions: isTrackingBudgetForecast ? undefined : meta?.conditions,
+    conditionsOp: isTrackingBudgetForecast ? undefined : meta?.conditionsOp,
     startDate,
     endDate,
-    includeAccountlessSchedules: meta?.accounts === undefined,
+    includeAccountlessSchedules: isTrackingBudgetForecast
+      ? undefined
+      : meta?.accounts === undefined,
+    source,
   });
   const errorMessage =
     error instanceof Error
@@ -105,9 +114,6 @@ export function BalanceForecastCard({
 
   const onCardHover = () => setIsCardHovered(true);
   const onCardHoverEnd = () => setIsCardHovered(false);
-
-  const lowestPoint = forecastData?.lowestBalance;
-  const hasNegative = lowestPoint && lowestPoint.balance < 0;
 
   const chartRange = isPlaceholderData
     ? committedChartRange.current
@@ -122,8 +128,11 @@ export function BalanceForecastCard({
     forecastData: normalizedForecastData,
     start: chartRange.start,
     end: chartRange.end,
-    granularity: 'Monthly',
+    granularity,
   });
+  const endingPoint = chartData.at(-1);
+  const lowestPoint = getLowestChartDataPoint(chartData);
+  const hasNegativeEndingBalance = endingPoint && endingPoint.balance < 0;
   const hasNegativeBalance = chartData.some(d => d.balance < 0);
   const zeroCrossingGradientOffset = getZeroCrossingGradientOffset(chartData);
   const gradientId = `balance-forecast-card-line-gradient-${widgetId}`;
@@ -133,40 +142,22 @@ export function BalanceForecastCard({
     dataPoint => dataPoint.date === todayReferenceDate,
   );
 
-  const scheduledOccurrenceCount = countForecastScheduledOccurrences(
-    normalizedForecastData,
-  );
-  const hasFilters = (meta?.conditions?.length ?? 0) > 0;
+  const scheduledOccurrenceCount = countForecastScheduledOccurrences({
+    forecastData: normalizedForecastData,
+    start: chartRange.start,
+    end: chartRange.end,
+    granularity,
+  });
+  const hasFilters =
+    !isTrackingBudgetForecast && (meta?.conditions?.length ?? 0) > 0;
 
   return (
     <ReportCard
+      widgetId={widgetId}
       isEditing={isEditing}
       disableClick={nameMenuOpen}
       to={`/reports/forecast/${widgetId}`}
-      menuItems={[
-        {
-          name: 'rename',
-          text: t('Rename'),
-        },
-        {
-          name: 'remove',
-          text: t('Remove'),
-        },
-        ...copyMenuItems,
-      ]}
-      onMenuSelect={item => {
-        if (handleCopyMenuSelect(item)) return;
-        switch (item) {
-          case 'rename':
-            setNameMenuOpen(true);
-            break;
-          case 'remove':
-            onRemove();
-            break;
-          default:
-            throw new Error(`Unrecognized selection: ${item}`);
-        }
-      }}
+      onRename={() => setNameMenuOpen(true)}
     >
       <View
         style={{ flex: 1 }}
@@ -189,26 +180,42 @@ export function BalanceForecastCard({
             />
             <DateRange start={start} end={end} />
           </View>
-          {lowestPoint && (
+          {endingPoint && (
             <View style={{ textAlign: 'right' }}>
               <Block
                 style={{
                   ...styles.mediumText,
                   fontWeight: 500,
                   marginBottom: 5,
-                  color: hasNegative ? theme.errorText : theme.pageText,
+                  color: hasNegativeEndingBalance
+                    ? theme.errorText
+                    : theme.pageText,
                 }}
               >
                 <PrivacyFilter activationFilters={[!isCardHovered]}>
-                  <Trans>Lowest</Trans>:{' '}
-                  {format(lowestPoint.balance, 'financial')}
+                  <Trans>Ending</Trans>:{' '}
+                  {format(endingPoint.balance, 'financial')}
                 </PrivacyFilter>
               </Block>
               <PrivacyFilter activationFilters={[!isCardHovered]}>
                 <Block style={{ fontSize: 12, color: theme.pageTextLight }}>
-                  {lowestPoint.date}
+                  {endingPoint.date}
                 </Block>
               </PrivacyFilter>
+              {lowestPoint && lowestPoint.date !== endingPoint.date ? (
+                <PrivacyFilter activationFilters={[!isCardHovered]}>
+                  <Block
+                    style={{
+                      fontSize: 12,
+                      color: theme.pageTextLight,
+                      marginTop: 4,
+                    }}
+                  >
+                    <Trans>Low</Trans>:{' '}
+                    {format(lowestPoint.balance, 'financial')}
+                  </Block>
+                </PrivacyFilter>
+              ) : null}
             </View>
           )}
         </View>
@@ -236,8 +243,14 @@ export function BalanceForecastCard({
                     width={width}
                     height={height}
                     data={chartData}
+
                     margin={{ top: 5, right: 5, left: 5, bottom: 5 }}
                   >
+                    <YAxis
+                      hide // do not show the axis labels (balance)
+                      domain={[yAxisBase === 'Zero-Based' ? 0 : 'auto', 'auto']}
+                      allowDataOverflow={false} // false by default but explicit > implicit
+                    />
                     <defs>
                       <linearGradient
                         id={gradientId}
@@ -251,19 +264,19 @@ export function BalanceForecastCard({
                             offset="0%"
                             stopColor={
                               hasNegativeBalance
-                                ? theme.errorText
-                                : theme.noticeText
+                                ? theme.reportsNumberNegative
+                                : theme.reportsChartFill
                             }
                           />
                         ) : (
                           <>
                             <stop
                               offset={`${zeroCrossingGradientOffset}%`}
-                              stopColor={theme.noticeText}
+                              stopColor={theme.reportsChartFill}
                             />
                             <stop
                               offset={`${zeroCrossingGradientOffset}%`}
-                              stopColor={theme.errorText}
+                              stopColor={theme.reportsNumberNegative}
                             />
                           </>
                         )}
@@ -303,7 +316,7 @@ export function BalanceForecastCard({
                     {showsTodayReferenceLine && (
                       <ReferenceLine
                         x={todayReferenceDate}
-                        stroke={theme.noticeText}
+                        stroke={theme.reportsBlue}
                         strokeDasharray="4 4"
                       />
                     )}
@@ -330,7 +343,12 @@ export function BalanceForecastCard({
                 color: theme.pageTextLight,
               }}
             >
-              {scheduledOccurrenceCount === 0 ? (
+              {isTrackingBudgetForecast ? (
+                <Trans>
+                  Forecast = starting balance + budgeted income - budgeted
+                  expenses
+                </Trans>
+              ) : scheduledOccurrenceCount === 0 ? (
                 hasFilters ? (
                   <Trans>
                     Filtered running total only; no scheduled occurrences in

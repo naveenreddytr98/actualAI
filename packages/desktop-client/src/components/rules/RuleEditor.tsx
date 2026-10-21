@@ -27,13 +27,10 @@ import * as monthUtils from '@actual-app/core/shared/months';
 import { q } from '@actual-app/core/shared/query';
 import {
   FIELD_TYPES,
-  friendlyOp,
-  getAllocationMethods,
   getFieldError,
   getValidOps,
   isValidOp,
   makeValue,
-  mapField,
   parse,
   unparse,
 } from '@actual-app/core/shared/rules';
@@ -62,6 +59,7 @@ import { addNotification } from '#notifications/notificationsSlice';
 import { aqlQuery } from '#queries/aqlQuery';
 import { useDispatch } from '#redux';
 import { disableUndo, enableUndo } from '#undo';
+import { friendlyOp, getAllocationMethods, mapField } from '#util/rule';
 
 import { FormulaActionEditor } from './FormulaActionEditor';
 
@@ -242,8 +240,8 @@ function EditorButtons({ onAdd, onDelete }) {
 function FieldError({ type }) {
   return (
     <Text
+      size="small"
       style={{
-        fontSize: 12,
         textAlign: 'center',
         color: theme.errorText,
         marginBottom: 5,
@@ -558,8 +556,8 @@ function ActionEditor({
             </View>
             {templated && (
               <Text
+                size="medium"
                 style={{
-                  ...styles.smallText,
                   color: theme.warningText,
                   marginTop: 3,
                 }}
@@ -1017,6 +1015,7 @@ const conditionFields = [
   .concat([
     ['amount-inflow', mapField('amount', { inflow: true })],
     ['amount-outflow', mapField('amount', { outflow: true })],
+    ['cleared', mapField('cleared')],
   ]);
 
 type RuleEditorProps = {
@@ -1029,7 +1028,7 @@ type RuleEditorProps = {
 
 export function RuleEditor({
   rule: defaultRule,
-  onSave: originalOnSave = undefined,
+  onSave: originalOnSave,
   onDelete,
   onCancel,
   style,
@@ -1446,8 +1445,8 @@ export function RuleEditor({
                       style={{ justifyContent: 'space-between' }}
                     >
                       <Text
+                        size="medium"
                         style={{
-                          ...styles.smallText,
                           marginBottom: '10px',
                         }}
                       >

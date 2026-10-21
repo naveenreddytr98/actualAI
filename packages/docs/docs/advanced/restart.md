@@ -4,21 +4,21 @@ If you've fallen behind on your budgeting and want to start fresh without starti
 
 This means that you want to reset your budget while keeping your categories, payees, rules and schedules. Below we have described two methods to restart your budget: one by deleting all transactions and another without deleting any transactions.
 
-If you're ok with truly starting completely from scratch, [just make a new file](/docs/getting-started/starting-fresh/).
+If you're ok with truly starting completely from scratch, [just make a new file](../getting-started/starting-fresh.md).
 
 :::caution
-Remember to [back up your budget](/docs/backup-restore/backup) before making any significant changes to your budget.
+Remember to [back up your budget](../backup-restore/backup.md) before making any significant changes to your budget.
 :::
 
 ## Restarting Your Budget by Deleting Transactions
 
 ### Step 1: Delete All Transactions
 
-- Click on _All Accounts_ in the left sidebar.
-- Select all transactions by clicking the checkbox at the top of the list (or use the shortcut `Ctrl + A` on Windows or `Cmd + A` on Mac).
-- Click on the lilac dropdown menu at the top of the transaction list and select **Delete**.
+1. Click on _All Accounts_ in the left sidebar.
+2. Select all transactions by clicking the checkbox at the top of the list (or use the shortcut `Ctrl + A` on Windows or `Cmd + A` on Mac).
+3. Click on the lilac dropdown menu at the top of the transaction list and select **Delete**.
 
-![Steps for deleting all transactions](/img/accounts/account-delete-all-transactions.webp)
+![All accounts with every transaction selected and the selection menu open, numbered 1 to 3 for All accounts, the select-all checkbox and Delete](/img/advanced/restart-delete-all-transactions@2x.webp)
 
 ### Step 2: Set Starting Balances
 

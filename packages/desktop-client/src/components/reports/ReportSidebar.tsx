@@ -3,6 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 
 import { Button } from '@actual-app/components/button';
 import { Menu } from '@actual-app/components/menu';
+import { ModeButton } from '@actual-app/components/mode-button';
 import { Popover } from '@actual-app/components/popover';
 import { Select } from '@actual-app/components/select';
 import type { SelectOption } from '@actual-app/components/select';
@@ -17,33 +18,38 @@ import type {
   CategoryEntity,
   CategoryGroupEntity,
   CustomReportEntity,
+  CustomReportTagScope,
   sortByOpType,
+  TagEntity,
   TimeFrame,
   TransactionEntity,
 } from '@actual-app/core/types/models';
 import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 
 import { Information } from '#components/alerts';
+import { useDateFormat } from '#hooks/useDateFormat';
 import { useLocale } from '#hooks/useLocale';
 
 import { CategorySelector } from './CategorySelector';
 import { defaultsList, disabledList } from './disabledList';
 import { getLiveRange } from './getLiveRange';
-import { ModeButton } from './ModeButton';
-import { ReportOptions } from './ReportOptions';
+import { getIntervalFormat, ReportOptions } from './ReportOptions';
 import type { dateRangeProps } from './ReportOptions';
 import { validateEnd, validateStart } from './reportRanges';
 import { setSessionReport } from './setSessionReport';
+import { TagScopeSelector } from './TagScopeSelector';
 
 type ReportSidebarProps = {
   customReportItems: CustomReportEntity;
   selectedCategories: CategoryEntity[];
   categories: { list: CategoryEntity[]; grouped: CategoryGroupEntity[] };
+  tags: TagEntity[];
   dateRangeLine: number;
   allIntervals: { name: string; pretty: string }[];
   setDateRange: (value: CustomReportEntity['dateRange']) => void;
   setGraphType: (value: CustomReportEntity['graphType']) => void;
   setGroupBy: (value: CustomReportEntity['groupBy']) => void;
+  setTagScope: (value: CustomReportTagScope) => void;
   setInterval: (value: CustomReportEntity['interval']) => void;
   setBalanceType: (value: CustomReportEntity['balanceType']) => void;
   setSortBy: (value: CustomReportEntity['sortBy']) => void;
@@ -58,6 +64,7 @@ type ReportSidebarProps = {
     value: CustomReportEntity['showUncategorized'],
   ) => void;
   setTrimIntervals: (value: CustomReportEntity['trimIntervals']) => void;
+  setShowTrendLines: (value: CustomReportEntity['showTrendLines']) => void;
   setIncludeCurrentInterval: (
     value: CustomReportEntity['includeCurrentInterval'],
   ) => void;
@@ -81,11 +88,13 @@ export function ReportSidebar({
   customReportItems,
   selectedCategories,
   categories,
+  tags,
   dateRangeLine,
   allIntervals,
   setDateRange,
   setGraphType,
   setGroupBy,
+  setTagScope,
   setInterval,
   setBalanceType,
   setSortBy,
@@ -97,6 +106,7 @@ export function ReportSidebar({
   setIncludeCurrentInterval,
   setShowUncategorized,
   setTrimIntervals,
+  setShowTrendLines,
   setSelectedCategories,
   onChangeDates,
   onReportChange,
@@ -110,6 +120,7 @@ export function ReportSidebar({
 }: ReportSidebarProps) {
   const { t } = useTranslation();
   const locale = useLocale();
+  const dateFormat = useDateFormat() || 'MM/dd/yyyy';
 
   const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -177,16 +188,23 @@ export function ReportSidebar({
     defaultItems(cond);
   };
 
+  const onChangeTagScope = (scope: CustomReportTagScope) => {
+    setSessionReport('tagScope', scope);
+    onReportChange({ type: 'modify' });
+    setTagScope(scope);
+  };
+
   const onChangeBalanceType = (cond: string) => {
     setSessionReport('balanceType', cond);
     onReportChange({ type: 'modify' });
     setBalanceType(cond);
 
     if (cond === 'Budgeted') {
-      // Budgeted does not support Payee and Account splits
+      // Budgeted does not support Payee, Account, or Tag splits
       if (
         customReportItems.groupBy === 'Payee' ||
-        customReportItems.groupBy === 'Account'
+        customReportItems.groupBy === 'Account' ||
+        customReportItems.groupBy === 'Tag'
       ) {
         setSessionReport('groupBy', 'Category');
         setGroupBy('Category');
@@ -306,10 +324,27 @@ export function ReportSidebar({
             ])}
             disabledKeys={
               customReportItems.balanceType === 'Budgeted'
-                ? [...new Set([...disabledItems('split'), 'Payee', 'Account'])]
+                ? [
+                    ...new Set([
+                      ...disabledItems('split'),
+                      'Payee',
+                      'Account',
+                      'Tag',
+                    ]),
+                  ]
                 : disabledItems('split')
             }
+            style={{ minWidth: 0 }}
           />
+          {customReportItems.groupBy === 'Tag' && (
+            <View style={{ marginLeft: 5, minWidth: 0 }}>
+              <TagScopeSelector
+                tags={tags}
+                tagScope={customReportItems.tagScope}
+                onChange={onChangeTagScope}
+              />
+            </View>
+          )}
         </View>
 
         <View
@@ -459,6 +494,12 @@ export function ReportSidebar({
                     !customReportItems.trimIntervals,
                   );
                   setTrimIntervals(!customReportItems.trimIntervals);
+                } else if (type === 'show-trend-lines') {
+                  setSessionReport(
+                    'showTrendLines',
+                    !customReportItems.showTrendLines,
+                  );
+                  setShowTrendLines(!customReportItems.showTrendLines);
                 }
               }}
               items={[
@@ -504,6 +545,13 @@ export function ReportSidebar({
                     'Trim empty intervals at the start and end of the report',
                   ),
                   toggle: customReportItems.trimIntervals,
+                },
+                {
+                  name: 'show-trend-lines',
+                  text: t('Show trend lines'),
+                  tooltip: t('Add a trend line per series (line graphs only)'),
+                  toggle: customReportItems.showTrendLines,
+                  disabled: customReportItems.graphType !== 'LineGraph',
                 },
               ]}
             />
@@ -619,9 +667,7 @@ export function ReportSidebar({
                 value={customReportItems.startDate}
                 defaultLabel={monthUtils.format(
                   customReportItems.startDate,
-                  ReportOptions.intervalFormat.get(
-                    customReportItems.interval,
-                  ) || '',
+                  getIntervalFormat(customReportItems.interval, dateFormat),
                   locale,
                 )}
                 options={allIntervals.map(({ name, pretty }) => [name, pretty])}
@@ -653,9 +699,7 @@ export function ReportSidebar({
                 value={customReportItems.endDate}
                 defaultLabel={monthUtils.format(
                   customReportItems.endDate,
-                  ReportOptions.intervalFormat.get(
-                    customReportItems.interval,
-                  ) || '',
+                  getIntervalFormat(customReportItems.interval, dateFormat),
                   locale,
                 )}
                 options={allIntervals.map(({ name, pretty }) => [name, pretty])}

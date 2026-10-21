@@ -4,6 +4,7 @@ description: Actual has started receiving what can only be described as AI slop 
 date: 2025-11-15T10:00
 slug: fighting-ai-slop
 tags: [announcement]
+in_app_notification: true
 hide_table_of_contents: false
 authors: MatissJanis
 ---
@@ -40,7 +41,7 @@ If you're using AI to help with contributions, that's perfectly fine! Just make 
 - **Take responsibility** - you're the one submitting it, so make sure it's something you stand behind
 - **Tag them with "ai generated"** (This isn't something we can truly enforce, but it's a gesture of good will — it helps everyone in the review process know when AI was involved.)
 
-For more details on how to contribute, see our [contributing guidelines](/docs/contributing/).
+For more details on how to contribute, see our [contributing guidelines](../../docs/contributing/).
 
 ## A Silver Lining
 

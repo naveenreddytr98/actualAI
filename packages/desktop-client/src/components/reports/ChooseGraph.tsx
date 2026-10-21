@@ -30,6 +30,7 @@ type ChooseGraphProps = {
   style?: CSSProperties;
   showHiddenCategories?: boolean;
   showOffBudget?: boolean;
+  showTrendLines?: boolean;
   showTooltip?: boolean;
   intervalsCount: number;
 };
@@ -48,6 +49,7 @@ export function ChooseGraph({
   style,
   showHiddenCategories = false,
   showOffBudget = false,
+  showTrendLines = false,
   showTooltip = true,
   intervalsCount,
 }: ChooseGraphProps) {
@@ -103,8 +105,11 @@ export function ChooseGraph({
         style={graphStyle}
         compact={compact}
         data={data}
+        filters={filters}
         balanceTypeOp={balanceTypeOp}
         viewLabels={viewLabels}
+        showHiddenCategories={showHiddenCategories}
+        showOffBudget={showOffBudget}
         showTooltip={showTooltip}
       />
     );
@@ -161,6 +166,7 @@ export function ChooseGraph({
         balanceTypeOp={balanceTypeOp}
         showHiddenCategories={showHiddenCategories}
         showOffBudget={showOffBudget}
+        showTrendLines={showTrendLines}
         showTooltip={showTooltip}
         interval={interval}
       />

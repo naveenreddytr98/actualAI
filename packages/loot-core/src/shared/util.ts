@@ -2,6 +2,8 @@
 import { formatDistanceToNow } from 'date-fns';
 import type { Locale } from 'date-fns';
 
+import { getDecimalPlaces } from './currencies';
+
 export function last<T>(arr: Array<T>) {
   return arr[arr.length - 1];
 }
@@ -421,7 +423,7 @@ export type IntegerAmount = number;
 // because we always do that on numbers, the app would potentially
 // display wrong numbers. Instead of `2**53` we use `2**51` which
 // gives division more room to be correct
-const MAX_SAFE_NUMBER = 2 ** 51 - 1;
+export const MAX_SAFE_NUMBER = 2 ** 51 - 1;
 const MIN_SAFE_NUMBER = -MAX_SAFE_NUMBER;
 
 export function safeNumber(value: number) {
@@ -453,7 +455,19 @@ export function integerToCurrency(
   return formatter.format(amount);
 }
 
-export function integerToCurrencyWithDecimal(integerAmount: IntegerAmount) {
+export function integerToCurrencyWithDecimal(
+  integerAmount: IntegerAmount,
+  currencyCode?: string,
+) {
+  if (currencyCode !== undefined) {
+    const dp = getDecimalPlaces(currencyCode);
+    return integerToCurrency(
+      integerAmount,
+      getNumberFormat({ ...numberFormatConfig, decimalPlaces: dp }).formatter,
+      dp,
+    );
+  }
+
   // If decimal digits exist, keep them. Otherwise format them as usual.
   if (integerAmount % 100 !== 0) {
     return integerToCurrency(
@@ -466,6 +480,10 @@ export function integerToCurrencyWithDecimal(integerAmount: IntegerAmount) {
   }
 
   return integerToCurrency(integerAmount);
+}
+
+export function amountToCurrencyInteger(amount: number, code: string): number {
+  return amountToInteger(amount, getDecimalPlaces(code));
 }
 
 export function amountToCurrency(amount: Amount): CurrencyAmount {
@@ -570,8 +588,10 @@ export function looselyParseAmount(amount: string) {
   }
 
   // Look for a decimal marker, then look for either 1-2 or 4-9 decimal places.
-  // This avoids matching against 3 places which may not actually be decimal
-  const m = amount.match(/[.,]([^.,]{4,9}|[^.,]{1,2})$/);
+  // This avoids matching against 3 places which may not actually be decimal.
+  // Only digits count as places, so a currency symbol or code after the
+  // number does not change how many there are.
+  const m = amount.match(/[.,](\d{4,9}|\d{1,2})[^\d.,]*$/);
   if (!m || m.index === undefined) {
     return safeNumber(parseFloat(extractNumbers(amount)));
   }

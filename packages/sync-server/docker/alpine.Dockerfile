@@ -1,8 +1,7 @@
-FROM node:22-alpine AS builder
+FROM alpine:3.23 AS builder
 
 # Install required packages
-RUN apk add --no-cache python3 openssl build-base
-RUN corepack enable
+RUN apk add --no-cache nodejs python3 openssl build-base
 
 WORKDIR /app
 
@@ -10,11 +9,21 @@ COPY .yarn ./.yarn
 COPY yarn.lock package.json .yarnrc.yml ./
 COPY packages ./packages
 
+# Alpine's Node.js package does not include Corepack, so expose the vendored
+# Yarn release on PATH.
+RUN ln -s /app/.yarn/releases/yarn-*.cjs /usr/local/bin/yarn
+
 # Avoiding memory issues with ARMv7
 RUN if [ "$(uname -m)" = "armv7l" ]; then yarn config set taskPoolConcurrency 2; yarn config set networkConcurrency 5; fi
 
 # Focus the workspaces in production mode
-RUN if [ "$(uname -m)" = "armv7l" ]; then npm_config_build_from_source=true yarn workspaces focus @actual-app/sync-server --production; else yarn workspaces focus @actual-app/sync-server --production; fi
+RUN yarn workspaces focus @actual-app/sync-server --production
+
+# better-sqlite3 only ships prebuilt binaries for x64 and arm64, so compile it
+# on any other architecture (armv6/armv7 images).
+RUN if [ "$(node node_modules/better-sqlite3/lib/binding.js)" = "0" ]; then \
+      cd node_modules/better-sqlite3 && node ../node-gyp/bin/node-gyp.js rebuild --release; \
+    fi
 
 # Dereference yarn's workspace:* symlinks so the prod stage can copy just node_modules.
 RUN cp -RL node_modules node_modules.real \
@@ -26,7 +35,7 @@ RUN find node_modules/@actual-app -maxdepth 2 -type d \
     \( -name src -o -name e2e -o -name __tests__ -o -name __mocks__ -o -name tests -o -name test -o -name build-stats \) \
     -exec rm -rf {} +
 
-FROM alpine:3.22 AS prod
+FROM alpine:3.23 AS prod
 
 # Minimal runtime dependencies
 RUN apk add --no-cache nodejs tini

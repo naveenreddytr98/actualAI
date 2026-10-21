@@ -1,6 +1,6 @@
-import React, { Fragment, useCallback, useMemo } from 'react';
+import React, { Fragment, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams } from 'react-router';
+import { useParams, useSearchParams } from 'react-router';
 
 import { Button } from '@actual-app/components/button';
 import { styles } from '@actual-app/components/styles';
@@ -12,11 +12,11 @@ import { send } from '@actual-app/core/platform/client/connection';
 import type { AccountEntity } from '@actual-app/core/types/models';
 
 import { useReopenAccountMutation, useUpdateAccountMutation } from '#accounts';
+import { isAccountFailedSync } from '#accounts/syncStatus';
 import { MobileBackButton } from '#components/mobile/MobileBackButton';
 import { AddTransactionButton } from '#components/mobile/transactions/AddTransactionButton';
 import { MobilePageHeader, Page } from '#components/Page';
 import { useAccount } from '#hooks/useAccount';
-import { useFailedAccounts } from '#hooks/useFailedAccounts';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 import {
   collapseModals,
@@ -65,6 +65,8 @@ export function AccountPage() {
           title={
             account ? (
               <AccountHeader account={account} />
+            ) : accountIdParam === 'all' ? (
+              <AllAccountsHeader />
             ) : (
               <NameOnlyHeader name={nameFromId(accountIdParam)} />
             )
@@ -92,17 +94,10 @@ export function AccountPage() {
 }
 
 function AccountHeader({ account }: { readonly account: AccountEntity }) {
-  const failedAccounts = useFailedAccounts();
   const { t } = useTranslation();
   const syncingAccountIds = useSelector(state => state.account.accountsSyncing);
-  const pending = useMemo(
-    () => syncingAccountIds.includes(account.id),
-    [syncingAccountIds, account.id],
-  );
-  const failed = useMemo(
-    () => failedAccounts.has(account.id),
-    [failedAccounts, account.id],
-  );
+  const pending = syncingAccountIds.includes(account.id);
+  const failed = isAccountFailedSync(account);
 
   const dispatch = useDispatch();
   const { mutate: updateAccount } = useUpdateAccountMutation();
@@ -146,30 +141,31 @@ function AccountHeader({ account }: { readonly account: AccountEntity }) {
     reopenAccount({ id: account.id });
   }, [account.id, reopenAccount]);
 
-  const [showRunningBalances, setShowRunningBalances] = useSyncedPref(
-    `show-balances-${account.id}`,
-  );
-  const [hideReconciled, setHideReconciled] = useSyncedPref(
-    `hide-reconciled-${account.id}`,
-  );
+  const [, setSearchParams] = useSearchParams();
 
-  const onToggleRunningBalance = useCallback(() => {
-    setShowRunningBalances(showRunningBalances === 'true' ? 'false' : 'true');
+  const onReconcile = useCallback(() => {
     dispatch(
-      collapseModals({
-        rootModalName: 'account-menu',
+      pushModal({
+        modal: {
+          name: 'account-reconcile',
+          options: {
+            accountId: account.id,
+            onReconcile: (amount: number) => {
+              setSearchParams(prev => {
+                prev.set('reconcile', String(amount));
+                return prev;
+              });
+              dispatch(
+                collapseModals({
+                  rootModalName: 'account-menu',
+                }),
+              );
+            },
+          },
+        },
       }),
     );
-  }, [showRunningBalances, setShowRunningBalances, dispatch]);
-
-  const onToggleReconciled = useCallback(() => {
-    setHideReconciled(hideReconciled === 'true' ? 'false' : 'true');
-    dispatch(
-      collapseModals({
-        rootModalName: 'account-menu',
-      }),
-    );
-  }, [hideReconciled, setHideReconciled, dispatch]);
+  }, [account.id, dispatch, setSearchParams]);
 
   const onClick = useCallback(() => {
     dispatch(
@@ -182,8 +178,7 @@ function AccountHeader({ account }: { readonly account: AccountEntity }) {
             onEditNotes,
             onCloseAccount,
             onReopenAccount,
-            onToggleRunningBalance,
-            onToggleReconciled,
+            onReconcile,
           },
         },
       }),
@@ -193,10 +188,9 @@ function AccountHeader({ account }: { readonly account: AccountEntity }) {
     dispatch,
     onCloseAccount,
     onEditNotes,
+    onReconcile,
     onReopenAccount,
     onSave,
-    onToggleRunningBalance,
-    onToggleReconciled,
   ]);
 
   return (
@@ -225,8 +219,8 @@ function AccountHeader({ account }: { readonly account: AccountEntity }) {
       )}
       <Button variant="bare" onPress={onClick}>
         <Text
+          size="extra-large"
           style={{
-            fontSize: 17,
             fontWeight: 500,
             ...styles.underlinedText,
             ...(styles.lineClamp(2) as CSSProperties),
@@ -235,6 +229,39 @@ function AccountHeader({ account }: { readonly account: AccountEntity }) {
           {account.closed
             ? t('Closed: {{accountName}}', { accountName: account.name })
             : account.name}
+        </Text>
+      </Button>
+    </View>
+  );
+}
+
+function AllAccountsHeader() {
+  const { t } = useTranslation();
+  const dispatch = useDispatch();
+
+  const onClick = useCallback(() => {
+    dispatch(
+      pushModal({
+        modal: {
+          name: 'all-accounts-menu',
+          options: {},
+        },
+      }),
+    );
+  }, [dispatch]);
+
+  return (
+    <View style={{ flexDirection: 'row' }}>
+      <Button variant="bare" onPress={onClick}>
+        <Text
+          size="extra-large"
+          style={{
+            fontWeight: 500,
+            ...styles.underlinedText,
+            ...(styles.lineClamp(2) as CSSProperties),
+          }}
+        >
+          {t('All Accounts')}
         </Text>
       </Button>
     </View>

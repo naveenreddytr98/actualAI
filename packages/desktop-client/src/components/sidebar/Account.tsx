@@ -11,8 +11,6 @@ import {
 } from '@actual-app/components/icons/v2';
 import { InitialFocus } from '@actual-app/components/initial-focus';
 import { Input } from '@actual-app/components/input';
-import { Menu } from '@actual-app/components/menu';
-import { Popover } from '@actual-app/components/popover';
 import { SpaceBetween } from '@actual-app/components/space-between';
 import { styles } from '@actual-app/components/styles';
 import { Text } from '@actual-app/components/text';
@@ -35,8 +33,9 @@ import { useIsTestEnv } from '#hooks/useIsTestEnv';
 import { useNotes } from '#hooks/useNotes';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 import { openAccountCloseModal } from '#modals/modalsSlice';
-import { useDispatch } from '#redux';
+import { useDispatch, useSelector } from '#redux';
 import type { Binding, SheetFields } from '#spreadsheet';
+import { isTouchDevice } from '#util/isTouchDevice';
 
 export const accountNameStyle: CSSProperties = {
   marginTop: -2,
@@ -97,8 +96,6 @@ export function Account<FieldName extends SheetFields<'account'>>({
     : 'title';
 
   const triggerRef = useRef(null);
-  const { setMenuOpen, menuOpen, handleContextMenu, position } =
-    useContextMenu();
 
   const { dragRef } = useDraggable({
     type,
@@ -123,21 +120,44 @@ export function Account<FieldName extends SheetFields<'account'>>({
   const [isEditing, setIsEditing] = useState(false);
 
   const accountNote = useNotes(`account-${account?.id}`);
-  const isTouchDevice =
-    window.matchMedia('(hover: none)').matches ||
-    window.matchMedia('(pointer: coarse)').matches;
-  const needsTooltip = !!account?.id && !isTouchDevice;
+  const needsTooltip = !!account?.id && !isTouchDevice();
   const reopenAccount = useReopenAccountMutation();
   const updateAccount = useUpdateAccountMutation();
 
   const balanceCell = <CellValue binding={query} type="financial" />;
 
+  const isContextMenuOpen = useSelector(state =>
+    state.contextMenu.items.some(
+      i =>
+        typeof i === 'object' && 'name' in i && i.name.startsWith('account-'),
+    ),
+  );
+  useContextMenu({
+    triggerRef,
+    enabled: account != null && needsTooltip,
+    items: [
+      {
+        name: 'account-rename',
+        text: t('Rename'),
+        onClick: () => setIsEditing(true),
+      },
+      account?.closed
+        ? {
+            name: 'account-reopen',
+            text: t('Reopen'),
+            onClick: () => reopenAccount.mutate({ id: account.id }),
+          }
+        : {
+            name: 'account-close',
+            text: t('Close'),
+            onClick: () =>
+              dispatch(openAccountCloseModal({ accountId: account.id })),
+          },
+    ],
+  });
+
   const accountRow = (
-    <View
-      innerRef={dropRef}
-      style={{ flexShrink: 0, ...outerStyle }}
-      onContextMenu={needsTooltip ? handleContextMenu : undefined}
-    >
+    <View innerRef={dropRef} style={{ flexShrink: 0, ...outerStyle }}>
       <View innerRef={triggerRef}>
         <DropHighlight pos={dropPos} />
         <View innerRef={handleDragRef}>
@@ -151,7 +171,10 @@ export function Account<FieldName extends SheetFields<'account'>>({
               ...style,
               position: 'relative',
               borderLeft: '4px solid transparent',
-              ...(updated && { fontWeight: 700 }),
+              ...(updated && {
+                fontWeight: 700,
+                color: theme.sidebarItemTextUpdated,
+              }),
             }}
             activeStyle={{
               borderColor: theme.sidebarItemAccentSelected,
@@ -243,50 +266,6 @@ export function Account<FieldName extends SheetFields<'account'>>({
               }
             />
           </Link>
-          {account && (
-            <Popover
-              triggerRef={triggerRef}
-              placement="bottom start"
-              isOpen={menuOpen}
-              onOpenChange={() => setMenuOpen(false)}
-              style={{ width: 200, margin: 1 }}
-              isNonModal
-              {...position}
-            >
-              <Menu
-                onMenuSelect={type => {
-                  switch (type) {
-                    case 'close': {
-                      void dispatch(
-                        openAccountCloseModal({ accountId: account.id }),
-                      );
-                      break;
-                    }
-                    case 'reopen': {
-                      reopenAccount.mutate({ id: account.id });
-                      break;
-                    }
-                    case 'rename': {
-                      setIsEditing(true);
-                      break;
-                    }
-                    default: {
-                      throw new Error(
-                        `Unrecognized menu option: ${String(type)}`,
-                      );
-                    }
-                  }
-                  setMenuOpen(false);
-                }}
-                items={[
-                  { name: 'rename', text: t('Rename') },
-                  account.closed
-                    ? { name: 'reopen', text: t('Reopen') }
-                    : { name: 'close', text: t('Close') },
-                ]}
-              />
-            </Popover>
-          )}
         </View>
       </View>
     </View>
@@ -367,7 +346,7 @@ export function Account<FieldName extends SheetFields<'account'>>({
       triggerProps={{
         delay: 1000,
         closeDelay: 250,
-        isDisabled: menuOpen,
+        isDisabled: isContextMenuOpen,
       }}
     >
       {accountRow}

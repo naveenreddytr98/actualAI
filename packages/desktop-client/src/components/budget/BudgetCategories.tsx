@@ -52,6 +52,10 @@ type BudgetCategoriesProps = {
   onDeleteCategory: (id: CategoryEntity['id']) => void;
   onDeleteGroup: (id: CategoryGroupEntity['id']) => void;
   onApplyBudgetTemplatesInGroup: (categoryIds: CategoryEntity['id'][]) => void;
+  onSortCategories?: (
+    groupId: CategoryGroupEntity['id'],
+    direction: 'asc' | 'desc',
+  ) => void;
   onReorderCategory: OnDropCallback;
   onReorderGroup: OnDropCallback;
 };
@@ -69,6 +73,7 @@ export const BudgetCategories = memo<BudgetCategoriesProps>(
     onDeleteCategory,
     onDeleteGroup,
     onApplyBudgetTemplatesInGroup,
+    onSortCategories,
     onReorderCategory,
     onReorderGroup,
   }) => {
@@ -110,13 +115,11 @@ export const BudgetCategories = memo<BudgetCategoriesProps>(
             ...(collapsedGroupIds.includes(group.id)
               ? []
               : groupCategories || []
-            ).map(
-              (cat): BudgetItem => ({
-                type: 'expense-category',
-                value: cat,
-                group,
-              }),
-            ),
+            ).map((cat): BudgetItem => ({
+              type: 'expense-category',
+              value: cat,
+              group,
+            })),
           ];
         }),
       );
@@ -141,12 +144,10 @@ export const BudgetCategories = memo<BudgetCategoriesProps>(
             : incomeGroup.categories?.filter(
                 cat => showHiddenCategories || !cat.hidden,
               ) || []
-          ).map(
-            (cat): BudgetItem => ({
-              type: 'income-category',
-              value: cat,
-            }),
-          ),
+          ).map((cat): BudgetItem => ({
+            type: 'income-category',
+            value: cat,
+          })),
         );
 
         items = items.concat(incomeCategoryItems);
@@ -301,6 +302,7 @@ export const BudgetCategories = memo<BudgetCategoriesProps>(
                   onToggleCollapse={onToggleCollapse}
                   onShowNewCategory={onShowNewCategory}
                   onApplyBudgetTemplatesInGroup={onApplyBudgetTemplatesInGroup}
+                  onSortCategories={onSortCategories}
                 />
               );
               break;
@@ -342,6 +344,7 @@ export const BudgetCategories = memo<BudgetCategoriesProps>(
                   collapsed={collapsedGroupIds.includes(item.value.id)}
                   onEditName={onEditName!}
                   onSave={_onSaveGroup}
+                  onSortCategories={onSortCategories}
                   onToggleCollapse={onToggleCollapse}
                   onShowNewCategory={onShowNewCategory!}
                 />

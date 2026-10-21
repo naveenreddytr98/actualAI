@@ -12,6 +12,7 @@ import * as budget from '#server/budget/base';
 import * as cloudStorage from '#server/cloud-storage';
 import * as db from '#server/db';
 import * as mappings from '#server/db/mappings';
+import { resetFormulaPreferencesCache } from '#server/formulas/bootstrap';
 import { handleBudgetImport } from '#server/importers';
 import type { ImportableBudgetType } from '#server/importers';
 import { app as mainApp } from '#server/main-app';
@@ -25,6 +26,7 @@ import {
   setSyncingMode,
 } from '#server/sync';
 import * as syncMigrations from '#server/sync/migrate';
+import { replayPendingMessages } from '#server/sync/replay';
 import * as rules from '#server/transactions/transaction-rules';
 import { clearUndo } from '#server/undo';
 import { updateVersion } from '#server/update';
@@ -144,10 +146,46 @@ async function getRemoteFiles() {
 }
 
 async function resetBudgetCache() {
-  // Recomputing everything will update the cache
-  await sheet.loadUserBudgets(db);
-  sheet.get().recomputeAll();
-  await sheet.waitOnSpreadsheet();
+  const spreadsheet = sheet.get();
+
+  // Hold the cache dirty for the whole reset so an interrupted one doesn't
+  // leave a half-written cache looking clean.
+  spreadsheet.startCacheBarrier();
+
+  try {
+    sheet.clearCache();
+
+    let seededCells: string[] = [];
+
+    // One transaction around the whole reset. `loadUserBudgets` would
+    // otherwise close its own, queueing a computation pass over everything
+    // downstream of the budget inputs that `recomputeAll` then repeats.
+    spreadsheet.startTransaction();
+    try {
+      await sheet.loadUserBudgets(db);
+
+      // Seeding the spend totals from a single grouped query keeps the
+      // recompute from running a `SELECT SUM(amount)` per category per month.
+      seededCells = await budget.reseedSumAmounts([
+        ...spreadsheet.meta().createdMonths,
+      ]);
+
+      // Recomputing everything will update the cache
+      spreadsheet.recomputeAll(new Set(seededCells));
+    } finally {
+      // A transaction left open would stop the spreadsheet from queueing any
+      // further computations, and make every later `waitOnSpreadsheet` throw.
+      spreadsheet.endTransaction();
+    }
+
+    // The seeded cells were loaded rather than computed, so they aren't part
+    // of the computation queue that normally gets cached.
+    spreadsheet.saveCachedCells(seededCells);
+
+    await sheet.waitOnSpreadsheet();
+  } finally {
+    spreadsheet.endCacheBarrier();
+  }
 }
 
 async function uploadBudget({ id }: { id?: Budget['id'] } = {}): Promise<{
@@ -181,12 +219,17 @@ async function uploadBudget({ id }: { id?: Budget['id'] } = {}): Promise<{
 
 async function downloadBudget({
   cloudFileId,
+  localId,
 }: {
   cloudFileId: Budget['cloudFileId'];
+  localId?: Budget['id'];
 }): Promise<{ id?: Budget['id']; error?: { reason: string; meta?: unknown } }> {
   let result;
   try {
-    result = await cloudStorage.download(cloudFileId);
+    if (localId) {
+      await closeBudget();
+    }
+    result = await cloudStorage.download(cloudFileId, localId);
   } catch (e) {
     if (e.type === 'FileDownloadError') {
       if (e.reason === 'file-exists' && e.meta.id) {
@@ -256,6 +299,7 @@ async function createDemoBudget() {
 
 async function closeBudget() {
   captureBreadcrumb({ message: 'Closing budget' });
+  resetFormulaPreferencesCache();
 
   // The spreadsheet may be running, wait for it to complete
   await sheet.waitOnSpreadsheet();
@@ -465,19 +509,44 @@ async function createBudget({
 
 async function importBudget({
   filepath,
+  buffer,
+  filename,
   type,
 }: {
-  filepath: string;
   type: ImportableBudgetType;
-}): Promise<{ error?: string }> {
+  /** Path to the file to import, on the engine's filesystem. */
+  filepath?: string;
+  /** Raw contents of the file to import; alternative to `filepath`. */
+  buffer?: ArrayBuffer;
+  /**
+   * Original name of the imported file; only used together with `buffer`,
+   * to derive the budget name for some import types.
+   */
+  filename?: string;
+}): Promise<{ error?: string; meta?: unknown; id?: string }> {
   try {
-    if (!(await fs.exists(filepath))) {
-      throw new Error(`File not found at the provided path: ${filepath}`);
+    let contents: Buffer;
+    let name: string;
+    if (filepath != null) {
+      if (!(await fs.exists(filepath))) {
+        throw new Error(`File not found at the provided path: ${filepath}`);
+      }
+
+      contents = Buffer.from(await fs.readFile(filepath, 'binary'));
+      name = filepath;
+    } else if (buffer != null) {
+      contents = Buffer.from(buffer);
+      name = filename || 'budget-import';
+    } else {
+      throw new Error('Either `filepath` or `buffer` must be given');
     }
 
-    const buffer = Buffer.from(await fs.readFile(filepath, 'binary'));
-    const results = await handleBudgetImport(type, filepath, buffer);
-    return results || {};
+    const results = await handleBudgetImport(type, name, contents);
+    if (results && results.error) {
+      return results;
+    }
+    // A successful import leaves the imported budget loaded
+    return { id: prefs.getPrefs()?.id };
   } catch (err) {
     err.message = 'Error importing budget: ' + err.message;
     captureException(err);
@@ -487,8 +556,10 @@ async function importBudget({
 
 async function exportBudget() {
   try {
+    const exported = await cloudStorage.exportBuffer();
     return {
-      data: await cloudStorage.exportBuffer(),
+      data: exported?.data ?? null,
+      warnings: exported?.warnings ?? [],
     };
   } catch (err) {
     err.message = 'Error exporting budget: ' + err.message;
@@ -531,6 +602,7 @@ async function _loadBudget(id: Budget['id']): Promise<{
   }
 
   try {
+    resetFormulaPreferencesCache();
     await prefs.loadPrefs(id);
     await db.openDatabase(id);
   } catch (e) {
@@ -565,6 +637,20 @@ async function _loadBudget(id: Budget['id']): Promise<{
 
     await closeBudget();
     return result;
+  }
+
+  try {
+    // Apply sync messages deferred from a newer app version, now that
+    // migrations have run. Skipped without a sync server: serverless
+    // edits aren't in the crdt log, so replay couldn't tell whether a
+    // pending value is stale.
+    if (getServer()) {
+      replayPendingMessages();
+    }
+  } catch (e) {
+    // Failing to replay shouldn't block loading the budget; the
+    // messages stay pending
+    captureException(e);
   }
 
   await db.loadClock();

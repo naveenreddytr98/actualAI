@@ -37,6 +37,7 @@ import { View } from '@actual-app/components/view';
 
 import { useFormat } from '#hooks/useFormat';
 import type { FormatType } from '#hooks/useFormat';
+import { useMergedRefs } from '#hooks/useMergedRefs';
 import { useModalState } from '#hooks/useModalState';
 import {
   AvoidRefocusScrollProvider,
@@ -124,14 +125,13 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(function Field(
   );
 });
 
-export function UnexposedCellContent({
-  value,
-  formatter,
-  style,
-  ...props
-}: Pick<CellProps, 'value' | 'formatter' | 'style'>) {
+export const UnexposedCellContent = forwardRef<
+  HTMLSpanElement,
+  Pick<CellProps, 'value' | 'formatter' | 'style'>
+>(function UnexposedCellContent({ value, formatter, style, ...props }, ref) {
   return (
     <Text
+      innerRef={ref}
       style={{
         flexGrow: 1,
         whiteSpace: 'nowrap',
@@ -144,7 +144,7 @@ export function UnexposedCellContent({
       {formatter ? formatter(value) : value}
     </Text>
   );
-}
+});
 
 type CellProps = Omit<ComponentProps<typeof View>, 'children' | 'value'> & {
   formatter?: (value: string, type?: unknown) => string | JSX.Element;
@@ -267,11 +267,13 @@ export function Cell({
     ],
   );
 
+  const mergedRef = useMergedRefs(viewRef, viewProps.ref, viewProps.innerRef);
+
   return (
     <View
-      innerRef={viewRef}
       style={{ ...widthStyle, ...cellStyle, ...style }}
       {...viewProps}
+      innerRef={mergedRef}
       data-testid={name}
     >
       {conditionalPrivacyFilter}
@@ -935,7 +937,7 @@ export type TableProps<T extends TableItem = TableItem> = {
     item: T;
     editing: boolean;
     focusedField: string | null;
-    onEdit: (id: T['id'], field: string) => void;
+    onEdit: TableNavigator<T>['onEdit'];
     index: number;
     position: number;
   }) => ReactNode;
@@ -1045,6 +1047,15 @@ export const Table = forwardRef(
       },
     }));
 
+    function saveScrollDelayed() {
+      saveScrollWidth(
+        scrollContainer.current?.offsetParent
+          ? scrollContainer.current?.offsetParent.clientWidth
+          : 0,
+        scrollContainer.current ? scrollContainer.current.clientWidth : 0,
+      );
+    }
+
     useLayoutEffect(() => {
       // We wait for the list to mount because AutoSizer needs to run
       // before it's mounted
@@ -1055,18 +1066,12 @@ export const Table = forwardRef(
       }
 
       if (scrollContainer.current && saveScrollWidth) {
-        setTimeout(saveScrollDelayed, 200);
+        const timeout = setTimeout(saveScrollDelayed, 200);
+        // Without this, the timer can fire after unmount and call setState
+        // on a dead component (crashes test teardown)
+        return () => clearTimeout(timeout);
       }
     });
-
-    function saveScrollDelayed() {
-      saveScrollWidth(
-        scrollContainer.current?.offsetParent
-          ? scrollContainer.current?.offsetParent.clientWidth
-          : 0,
-        scrollContainer.current ? scrollContainer.current.clientWidth : 0,
-      );
-    }
 
     function renderRow({ index, style, key }) {
       const item = items[index];

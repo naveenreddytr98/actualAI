@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { SvgInformationCircle } from '@actual-app/components/icons/v2';
@@ -16,10 +16,11 @@ import type {
 
 import { updateTemplate } from '#components/budget/goals/actions';
 import type { Action } from '#components/budget/goals/actions';
+import { TWO_UP_FIELD_FLEX } from '#components/budget/goals/editor/fieldLayout';
 import { FormField, FormLabel } from '#components/forms';
 import { LabeledCheckbox } from '#components/forms/LabeledCheckbox';
 import { AmountInput } from '#components/util/AmountInput';
-import { GenericInput } from '#components/util/GenericInput';
+import { MonthInput } from '#components/util/MonthInput';
 import { useFormat } from '#hooks/useFormat';
 
 type BySaveAutomationProps = {
@@ -41,9 +42,21 @@ export const BySaveAutomation = ({
 
   const committedRepeat = template.repeat ?? 1;
   const [rawRepeat, setRawRepeat] = useState(String(committedRepeat));
-  useEffect(() => {
+  const [prevCommittedRepeat, setPrevCommittedRepeat] =
+    useState(committedRepeat);
+  if (committedRepeat !== prevCommittedRepeat) {
+    setPrevCommittedRepeat(committedRepeat);
     setRawRepeat(String(committedRepeat));
-  }, [committedRepeat]);
+  }
+
+  const onRepeatChange = (value: string) => {
+    setRawRepeat(value);
+    const parsed = Math.trunc(Number(value));
+    if (value.trim() !== '' && parsed >= 1 && parsed !== committedRepeat) {
+      dispatch(updateTemplate({ type: template.type, repeat: parsed }));
+    }
+  };
+
   const commitRepeat = () => {
     const parsed = Math.max(1, Math.trunc(Number(rawRepeat)) || 1);
     setRawRepeat(String(parsed));
@@ -59,7 +72,7 @@ export const BySaveAutomation = ({
   return (
     <>
       <SpaceBetween align="center" gap={10} style={{ marginTop: 10 }}>
-        <FormField style={{ flex: 1 }}>
+        <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
           <FormLabel title={t('Total amount')} htmlFor="by-amount-field" />
           <AmountInput
             id="by-amount-field"
@@ -75,28 +88,19 @@ export const BySaveAutomation = ({
             }
           />
         </FormField>
-        <FormField style={{ flex: 1 }}>
+        <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
           <FormLabel title={t('Target month')} htmlFor="by-month-field" />
-          <GenericInput
-            // remount when the stored month changes so the picker re-syncs
-            // to day 01 instead of lingering on whatever day the user picked
-            key={template.month}
-            type="date"
-            field="date"
-            value={template.month ? `${template.month}-01` : ''}
-            onChange={(value: string) =>
-              dispatch(
-                updateTemplate({
-                  type: template.type,
-                  month: value ? value.slice(0, 7) : '',
-                }),
-              )
+          <MonthInput
+            id="by-month-field"
+            value={template.month ?? ''}
+            onChange={month =>
+              dispatch(updateTemplate({ type: template.type, month }))
             }
           />
         </FormField>
       </SpaceBetween>
       <SpaceBetween align="center" gap={10} style={{ marginTop: 10 }}>
-        <FormField style={{ flex: 1 }}>
+        <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
           <LabeledCheckbox
             id="by-repeats-field"
             checked={repeats}
@@ -123,47 +127,47 @@ export const BySaveAutomation = ({
             </span>
           </LabeledCheckbox>
         </FormField>
-        {repeats && (
-          <>
-            <FormField style={{ flex: 1 }}>
-              <FormLabel
-                title={t('Repeat every')}
-                htmlFor="by-repeat-amount-field"
-              />
-              <Input
-                id="by-repeat-amount-field"
-                type="number"
-                min={1}
-                step={1}
-                value={rawRepeat}
-                onChangeValue={setRawRepeat}
-                onBlur={commitRepeat}
-              />
-            </FormField>
-            <FormField style={{ flex: 1 }}>
-              <FormLabel title={t('Period')} htmlFor="by-period-field" />
-              <Select
-                id="by-period-field"
-                value={template.annual ? 'year' : 'month'}
-                onChange={value =>
-                  dispatch(
-                    updateTemplate({
-                      type: template.type,
-                      annual: value === 'year',
-                    }),
-                  )
-                }
-                options={[
-                  ['month', t('Months')],
-                  ['year', t('Years')],
-                ]}
-              />
-            </FormField>
-          </>
-        )}
       </SpaceBetween>
+      {repeats && (
+        <SpaceBetween align="center" gap={10} style={{ marginTop: 10 }}>
+          <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
+            <FormLabel
+              title={t('Repeat every')}
+              htmlFor="by-repeat-amount-field"
+            />
+            <Input
+              id="by-repeat-amount-field"
+              type="number"
+              min={1}
+              step={1}
+              value={rawRepeat}
+              onChangeValue={onRepeatChange}
+              onBlur={commitRepeat}
+            />
+          </FormField>
+          <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
+            <FormLabel title={t('Period')} htmlFor="by-period-field" />
+            <Select
+              id="by-period-field"
+              value={template.annual ? 'year' : 'month'}
+              onChange={value =>
+                dispatch(
+                  updateTemplate({
+                    type: template.type,
+                    annual: value === 'year',
+                  }),
+                )
+              }
+              options={[
+                ['month', t('Months')],
+                ['year', t('Years')],
+              ]}
+            />
+          </FormField>
+        </SpaceBetween>
+      )}
       <SpaceBetween align="center" gap={10} style={{ marginTop: 10 }}>
-        <FormField style={{ flex: 1 }}>
+        <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
           <LabeledCheckbox
             id="by-spend-down-field"
             checked={spendDown}
@@ -228,29 +232,24 @@ export const BySaveAutomation = ({
             </span>
           </LabeledCheckbox>
         </FormField>
-        {spendDown && (
-          <FormField style={{ flex: 1 }}>
+      </SpaceBetween>
+      {spendDown && (
+        <SpaceBetween align="center" gap={10} style={{ marginTop: 10 }}>
+          <FormField style={{ flex: TWO_UP_FIELD_FLEX }}>
             <FormLabel
               title={t('Start spending in')}
               htmlFor="by-spend-from-field"
             />
-            <GenericInput
-              key={fromMonth}
-              type="date"
-              field="date"
-              value={fromMonth ? `${fromMonth}-01` : ''}
-              onChange={(value: string) =>
-                dispatch(
-                  updateTemplate({
-                    type: 'spend',
-                    from: value ? value.slice(0, 7) : '',
-                  }),
-                )
+            <MonthInput
+              id="by-spend-from-field"
+              value={fromMonth ?? ''}
+              onChange={from =>
+                dispatch(updateTemplate({ type: 'spend', from }))
               }
             />
           </FormField>
-        )}
-      </SpaceBetween>
+        </SpaceBetween>
+      )}
     </>
   );
 };

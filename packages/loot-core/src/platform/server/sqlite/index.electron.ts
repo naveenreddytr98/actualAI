@@ -6,7 +6,11 @@ import { getDataDir, readFile, removeFile } from '#platform/server/fs';
 import { logger } from '#platform/server/log';
 
 import { normalise } from './normalise';
+import { regexp } from './regexp';
+import type { SqlParam } from './types';
 import { unicodeLike } from './unicodeLike';
+
+export type { SqlParam } from './types';
 
 function verifyParamTypes(sql, arr) {
   arr.forEach(val => {
@@ -21,6 +25,13 @@ export async function init() {
   // No need to initialise on electron
 }
 
+// Parity with the browser sqlite backend (which instantiates sql.js from an
+// embedded wasm binary). better-sqlite3 has no wasm, so this is a no-op; it
+// exists so callers can reference `setWasmBinary` regardless of platform.
+export function setWasmBinary(_binary: ArrayBuffer | Uint8Array) {
+  // no-op on native sqlite
+}
+
 export function prepare(db, sql) {
   return db.prepare(sql);
 }
@@ -28,7 +39,7 @@ export function prepare(db, sql) {
 export function runQuery(
   db: SQL.Database,
   sql: string | SQL.Statement,
-  params: (string | number)[] = [],
+  params: SqlParam[] = [],
   fetchAll = false,
 ) {
   if (params) {
@@ -61,8 +72,23 @@ export function execQuery(db: SQL.Database, sql: string) {
   db.exec(sql);
 }
 
-export function transaction(db: SQL.Database, fn: () => void) {
-  db.transaction(fn)();
+export type TransactionOptions = {
+  // Take the write lock up front (`BEGIN IMMEDIATE`). Only matters on
+  // the web backend, but keep the signature the same on every platform.
+  immediate?: boolean;
+};
+
+export function transaction(
+  db: SQL.Database,
+  fn: () => void,
+  { immediate = false }: TransactionOptions = {},
+) {
+  const run = db.transaction(fn);
+  if (immediate) {
+    run.immediate();
+  } else {
+    run();
+  }
 }
 
 // **Important**: this is an unsafe function since sqlite executes
@@ -94,10 +120,6 @@ export async function asyncTransaction(
       db.exec('COMMIT');
     }
   }
-}
-
-function regexp(regex: string, text: string | null) {
-  return new RegExp(regex).test(text || '') ? 1 : 0;
 }
 
 export function openDatabase(pathOrBuffer: string | Buffer): SQL.Database {

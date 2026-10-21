@@ -8,7 +8,7 @@ import React, {
 } from 'react';
 import type { ReactNode, RefObject } from 'react';
 
-import debounce from 'lodash/debounce';
+import { debounce } from 'es-toolkit/compat';
 
 type ScrollDirection = 'up' | 'down' | 'left' | 'right';
 
@@ -158,7 +158,7 @@ export function ScrollProvider<T extends Element>({
           }
         }
       }, delayMs),
-    [delayMs, hasScrolledToEnd, isScrolling],
+    [delayMs, hasScrolledToEnd, isScrolling, listeners],
   );
 
   useEffect(() => {
@@ -191,7 +191,7 @@ export function ScrollProvider<T extends Element>({
         listeners.current = listeners.current.filter(l => l !== listener);
       };
     },
-    [],
+    [listeners],
   );
 
   return (

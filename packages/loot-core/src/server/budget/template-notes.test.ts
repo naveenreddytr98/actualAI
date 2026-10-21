@@ -268,7 +268,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         type: 'message',
-        message: 'All templates passed! 🎉',
+        message: 'templates-check-passed',
       },
     },
     {
@@ -283,7 +283,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         type: 'message',
-        message: 'All templates passed! 🎉',
+        message: 'templates-check-passed',
       },
     },
     {
@@ -298,7 +298,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         sticky: true,
-        message: 'There were errors interpreting some templates:',
+        message: 'template-errors',
         pre: 'Category 1: #template broken template',
       },
     },
@@ -314,7 +314,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         sticky: true,
-        message: 'There were errors interpreting some templates:',
+        message: 'template-errors',
         pre: 'Category 1: Schedule "Non-existent Schedule" does not exist',
       },
     },
@@ -330,7 +330,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         sticky: true,
-        message: 'There were errors interpreting some templates:',
+        message: 'template-errors',
         pre: 'Category 1: #template schedule Mock Schedule 1 [increase 1001%]\nError: Invalid adjustment percentage (1001%). Must be between -100% and 1000%',
       },
     },
@@ -346,7 +346,7 @@ describe('checkTemplates', () => {
       mockSchedules: mockSchedules(),
       expected: {
         sticky: true,
-        message: 'There were errors interpreting some templates:',
+        message: 'template-errors',
         pre: 'Category 1: #template schedule Mock Schedule 1 [decrease 101%]\nError: Invalid adjustment percentage (-101%). Must be between -100% and 1000%',
       },
     },
@@ -379,6 +379,7 @@ function mockSchedules(): db.DbSchedule[] {
       tombstone: 0,
       name: 'Mock Schedule 1',
       custom_upcoming_length: null,
+      sort_order: 0,
     },
     {
       id: 'mock-schedule-2',
@@ -389,6 +390,7 @@ function mockSchedules(): db.DbSchedule[] {
       tombstone: 0,
       name: 'Mock Schedule 2',
       custom_upcoming_length: null,
+      sort_order: 0,
     },
   ];
 }
@@ -522,5 +524,32 @@ describe('unparse descriptions', () => {
     ]);
 
     expect(serialized).toBe('first\nsecond\n#template 10');
+  });
+});
+
+describe('periodic template intervals', () => {
+  it.each(['days', 'weeks', 'months', 'years'])(
+    'rejects a zero-%s interval in legacy notes',
+    unit => {
+      expect(() =>
+        parse(`#template 100 repeat every 0 ${unit} starting 2026-09-01`),
+      ).toThrow();
+    },
+  );
+  it.each(['days', 'weeks', 'months', 'years'])(
+    'continues to parse positive %s intervals',
+    unit => {
+      expect(
+        parse(`#template 100 repeat every 2 ${unit} starting 2026-09-01`),
+      ).toMatchObject({
+        type: 'periodic',
+        period: { amount: 2 },
+      });
+    },
+  );
+  it.each(['002', '000'])('rejects an interval with leading zeroes (%s)', n => {
+    expect(() =>
+      parse(`#template 100 repeat every ${n} days starting 2026-09-01`),
+    ).toThrow();
   });
 });

@@ -1,7 +1,5 @@
 # @actual-app/cli
 
-> **WARNING:** This CLI is experimental.
-
 Command-line interface for [Actual Budget](https://actualbudget.org). Query and modify your budget data from the terminal — accounts, transactions, categories, payees, rules, schedules, and more.
 
 > **Note:** This CLI connects to a running [Actual sync server](https://actualbudget.org/docs/install/). It does not operate on local budget files directly.
@@ -43,20 +41,39 @@ Configuration is resolved in this order (highest priority first):
 
 ### Environment Variables
 
-| Variable               | Description                                           |
-| ---------------------- | ----------------------------------------------------- |
-| `ACTUAL_SERVER_URL`    | URL of the Actual sync server (required)              |
-| `ACTUAL_PASSWORD`      | Server password (required unless using token)         |
-| `ACTUAL_SESSION_TOKEN` | Session token (alternative to password)               |
-| `ACTUAL_SYNC_ID`       | Budget Sync ID (required for most commands)           |
-| `ACTUAL_DATA_DIR`      | Local directory for cached budget data                |
-| `ACTUAL_CACHE_TTL`     | Cache TTL in seconds (default: 60)                    |
-| `ACTUAL_LOCK_TIMEOUT`  | Budget-dir lock wait timeout in seconds (default: 10) |
-| `ACTUAL_NO_LOCK`       | Set to `1` to disable budget-dir locking              |
+| Variable                     | Description                                           |
+| ---------------------------- | ----------------------------------------------------- |
+| `ACTUAL_SERVER_URL`          | URL of the Actual sync server (required)              |
+| `ACTUAL_PASSWORD`            | Server password (required unless using token)         |
+| `ACTUAL_SESSION_TOKEN`       | Session token (alternative to password)               |
+| `ACTUAL_SYNC_ID`             | Budget Sync ID (required for most commands)           |
+| `ACTUAL_DATA_DIR`            | Local directory for cached budget data                |
+| `ACTUAL_CACHE_TTL`           | Cache TTL in seconds (default: 60)                    |
+| `ACTUAL_LOCK_TIMEOUT`        | Budget-dir lock wait timeout in seconds (default: 10) |
+| `ACTUAL_NO_LOCK`             | Set to `1` to disable budget-dir locking              |
+| `ACTUAL_ENCRYPTION_PASSWORD` | Password for end-to-end encrypted budget files        |
+
+The three secrets — `ACTUAL_PASSWORD`, `ACTUAL_SESSION_TOKEN` and `ACTUAL_ENCRYPTION_PASSWORD` — can be read from a file instead, by adding `_FILE` to the variable name (for example `ACTUAL_PASSWORD_FILE=/run/secrets/actual-password`). `_FILE`-suffixed environment variables take priority over regular ones.
 
 ### Config File
 
-Create an `.actualrc.json` (or `.actualrc`, `.actualrc.yaml`, `actual.config.js`):
+The CLI uses [cosmiconfig](https://github.com/cosmiconfig/cosmiconfig) for configuration. The config file can be anywhere between the current working directory and your home directory.
+
+You can create a config file in any of these formats:
+
+- `.actualrc` (JSON or YAML)
+- `.actualrc.json`, `.actualrc.yaml`, `.actualrc.yml`
+- `actual.config.json`, `actual.config.yaml`, `actual.config.yml`
+- An `"actual"` key in your `package.json`
+
+You can instead store your configuration in the `actual` subdirectory of the global configuration directory (e.g. `~/.config/actual/` on Linux) in any of these formats:
+
+- `config` (JSON or YAML)
+- `config.json`
+- `config.yaml`
+- `config.yml`
+
+Example `.actualrc.json`:
 
 ```json
 {
@@ -69,7 +86,7 @@ Create an `.actualrc.json` (or `.actualrc`, `.actualrc.yaml`, `actual.config.js`
 }
 ```
 
-**Security:** Do not store plaintext passwords in config files (e.g. `.actualrc.json`, `.actualrc`, `.actualrc.yaml`, `actual.config.js`). Add these files to `.gitignore` if they contain secrets. Prefer the `ACTUAL_SESSION_TOKEN` environment variable instead of the `password` field. See [Environment Variables](#environment-variables) for using a session token.
+**Security:** Avoid storing plaintext passwords in config files (including the `password` key above). If these files do contain passwords, set restrictive permissions (e.g. 600 on Linux), and, if they are in a git repo, add them to `.gitignore`. Prefer environment variables such as `ACTUAL_PASSWORD` or `ACTUAL_SESSION_TOKEN`, or use a session token in config instead of a password. Better still, use your runtime's built-in support for secrets (e.g. Docker secrets) and point `ACTUAL_PASSWORD_FILE` or `ACTUAL_SESSION_TOKEN_FILE` at the resulting file. See [Environment Variables](#environment-variables) for details.
 
 ### Global Flags
 

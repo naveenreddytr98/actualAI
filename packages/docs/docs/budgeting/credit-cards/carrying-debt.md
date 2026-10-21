@@ -16,26 +16,29 @@ This step-by-step guide is based on entering transactions manually and clearing 
 
 Before we get started, check the settings for your Credit Card accounts to make it easy to see everything that's going on and we are on the same page:
 
-- Using the 3-dot menu on the right of the account page, choose the following:
-  - Show running balance
-  - Show "cleared" checkboxes
-  - Show reconciled transactions
+- Using the 3-dot menu on the right of the account page, choose **Manage table columns** and turn on the following columns, then click **Save**:
+  - Running balance
+  - Cleared
 
-    <img alt="Show running balance" src="/img/credit-cards/CC-014.webp" />
+    <img width="860" alt="The account menu with Manage table columns highlighted" src="/img/budgeting/credit-cards/carrying-debt-account-menu@2x.webp" />
+
+    <img width="512" alt="The Table columns dialog with Running balance and Cleared turned on" src="/img/budgeting/credit-cards/carrying-debt-table-columns@2x.webp" />
+
+- Reconciled transactions are shown unless you have hidden them. If the 3-dot menu shows **Show reconciled transactions**, choose it.
 
 - Check that the _pills_ showing "Cleared total" and "Uncleared total" are showing under the account name.
   - To show the pills, hover over the account balance under the account name and press the expand >> arrows.
 
-    <img alt="Account page Balance Expand Arows" src="/img/credit-cards/CC-01.webp" />
+    <img width="860" alt="The account header with the expand arrows next to the balance highlighted" src="/img/budgeting/credit-cards/carrying-debt-balance-arrows@2x.webp" />
     <br />
-    <img alt="Account Page Balances Expanded" src="/img/credit-cards/CC-02.webp" />
+    <img width="860" alt="The account header with the Cleared total and Uncleared total pills highlighted" src="/img/budgeting/credit-cards/carrying-debt-balance-expanded@2x.webp" />
 
 <br />
 
 - When we use the "Uncleared total" or account "Balance" from Actual we will use the absolute value, the positive value without the (-) sign. So, if Actual shows "Uncleared total: -2553.86", then we will use 2553.86.
 - For our purposes here, we will be paying the credit card from a checking account.
 - While you are paying off your credit card(s), it is best to use a debit card or cash. If that is not possible, and you have a card with no debt, use that one to make new purchases so you can pay it in full every month using [Paying in Full - Within the Budget](./paying-in-full.md) and work to pay off another. In any case, use _**only one credit card**_ for new purchases and pay off the one with the highest interest first.
-- We recommend doing this On Budget. If you will not use the card again after it's completely paid off and you have received a statement with a $0 balance, you can [close](/docs/accounts/index.md#closing-or-deleting-an-account) the account.
+- We recommend doing this On Budget. If you will not use the card again after it's completely paid off and you have received a statement with a $0 balance, you can [close](../../accounts/index.md#closing-or-deleting-an-account) the account.
 
 ### Setting Up Actual Budget for Credit Card Debt
 
@@ -64,12 +67,12 @@ If you have been paying the statement balance in full every month, but need to i
 
 - If you are _not_ paying off the debt on this card:
   - When your statement arrives, create the Interest & Fees transaction in the Credit Card account and categorize it to **Bank Card Debt**.
-  - [Reconcile](/docs/accounts/reconciliation.md) your account.
+  - [Reconcile](../../accounts/reconciliation.md) your account.
   - Make sure the amount in the **Budgeted** column for **Bank Card Debt** is at least the statement Minimum Payment. If you need to add to it to reach the Minimum Payment, _cover_ any overspending by transferring from another category with a positive balance.
   - Use _Make Transfer_ to transfer the amount in the **Budgeted** column from your Checking account to the Credit Card account. Send that amount to the Credit Card Bank to pay your bill.
 - If you _are_ paying off the debt:
   - When your statement arrives, create the Interest & Fees transaction in the Credit Card account and categorize it to **Bank Card Debt**.
-  - [Reconcile](/docs/accounts/reconciliation.md) your account.
+  - [Reconcile](../../accounts/reconciliation.md) your account.
   - Make sure the amount in the **Budgeted** category is higher than the statement Minimum Payment. One day your Minimum Payment will pay off the card completely! Happy Day!
   - Use _Make Transfer_ to transfer the amount in the **Budgeted** column from your Checking account to the Credit Card account. Send that amount to the Credit Card Bank to pay your bill.
 
@@ -79,7 +82,7 @@ If you have been paying the statement balance in full every month, but need to i
 - When your statement arrives, find the following information:
   - New Balance, Minimum Payment, Interest & Fees, Returns/Credits and New Purchases. We will use this information to reconcile and calculate your payment.
   - In the Credit Card account, create a transaction for Interest & Fees and categorize it to **Bank Card Debt**.
-  - [Reconcile](/docs/accounts/reconciliation.md) the account. Clear each and every transaction with your statement, including the Interest & Fees and Return Credits. Fix any problems before you move on. We do not advocate using a Reconciliation Transaction to fix any problems, especially when you are carrying debt. Before you "complete" the reconciliation, you can add up your cleared purchases and make sure the sum matches the "New Purchases" amount from your statement. The first month will be the most difficult - it will get easier!
+  - [Reconcile](../../accounts/reconciliation.md) the account. Clear each and every transaction with your statement, including the Interest & Fees and Return Credits. Fix any problems before you move on. We do not advocate using a Reconciliation Transaction to fix any problems, especially when you are carrying debt. Before you "complete" the reconciliation, you can add up your cleared purchases and make sure the sum matches the "New Purchases" amount from your statement. The first month will be the most difficult - it will get easier!
 - Looking at your statement, the very least amount you need to pay to not increase your debt is the Interest & Fees and your New Purchases minus the Return Credits. Remember, you accounted for and funded the interest at the beginning of the month when you budgeted for the expected Minimum Payment and you were setting aside funds to pay for New Purchases each time you categorized them! You can pay for them all without worry.
   - If you are _not_ paying off any original debt on this card, make sure the **Budgeted** column is at least the Minimum Payment. The Minimum Payment you budgeted for at the beginning of the month should have this covered. If the Minimum Payment is more than you expected due to Interest or Fees, add an amount to the **Budgeted** column to equal the statement Minimum Payment. _Cover_ any additions to the **Budgeted** amount by transferring from another category with a positive balance.
   - If you _are_ paying off the debt on this card, make sure the current **Budgeted** column is more than the Minimum Payment. It should be at least the sum of the Interest & Fees plus the extra amount you want to pay off, but it will probably be a bit more and that's OK!
@@ -99,15 +102,15 @@ One day you won't need to add any extra to pay the credit card bill in full! Hap
 
 ### Examples:
 
-At he beginning of July we budget for the expected Minimum Payments as part of our necessary expenses. After all of our expenses are accounted for, we have $202.29 leftover and we decide to add $200 extra to our Citibank Credit Card. We add $200 to our $90 expected Minimum Payment. The $2.29 we Hold for next Month.
+At the beginning of August we budget for the expected Minimum Payments as part of our necessary expenses. After all of our expenses are accounted for, we have $202.29 leftover and we decide to add $200 extra to our Citibank Credit Card. We add $200 to our $90 expected Minimum Payment. The $2.29 we Hold for next Month.
 
-<img alt="Budget after necessary expenses" src="/img/credit-cards/CC-03.webp" />
+![The August budget with the minimum payments budgeted in the Credit Card Debt group and 202.29 left to budget](/img/budgeting/credit-cards/carrying-debt-first-month-minimums@2x.webp)
+
+![The August budget with 290.00 budgeted for Citi Card Debt and 2.29 left to budget](/img/budgeting/credit-cards/carrying-debt-first-month-extra@2x.webp)
+
 <br />
-<img alt="Budget after adding extra" src="/img/credit-cards/CC-04.webp" />
 
-<br />
-
-During July we spend using the [Paying in Full - Within the Budget](./paying-in-full.md) strategy. We use the DEMO Credit Card for some of our purchases. We are not spending using the Citibank Card.
+During August we spend using the [Paying in Full - Within the Budget](./paying-in-full.md) strategy. We use the DEMO Credit Card for some of our purchases. We are not spending using the Citibank Card.
 
 The Citibank Statement arrives. We need the following information from the summary:
 
@@ -124,7 +127,7 @@ The Citibank Statement arrives. We need the following information from the summa
 
 Following [Cards with Debt and No New Purchases](#debt-no-new) we enter a transaction into the Citibank account for the Interest & Fees and categorize it to **Citi Card Debt**. We reconcile the account, agreeing with Citibank that our New Balance is $2564.00.
 
-<img alt="Citibank Cleared Transactions" src="/img/credit-cards/CC-05.webp" />
+<img width="860" alt="The Citibank Credit Card account being reconciled, with the Interest & Fees transaction cleared and a cleared total of -2,564.00" src="/img/budgeting/credit-cards/carrying-debt-citibank-reconcile@2x.webp" />
 
 <br />
 
@@ -132,21 +135,21 @@ Our **Budgeted** amount of 290.00 is larger than the Minimum Payment of $90.00, 
 
 You may notice that the Citibank Balance matches the **Citi Card Debt** Balance. The Interest & Fees we added to the debt were canceled by our **Budgeted** amount that included them.
 
-<img alt="Citibank July" src="/img/credit-cards/CC-06.webp" />
+<img width="860" alt="The Citibank Credit Card register after the 290.00 payment, with the account balance of -2,274.00 highlighted" src="/img/budgeting/credit-cards/carrying-debt-citibank-first-payment@2x.webp" />
 <br />
-<img alt="Budget July" src="/img/credit-cards/CC-07.webp" />
-
-<br />
-
-On the 1st of August we set our budget and start with our Minimum Payments of $90 for the Citibank card and $50 for the DEMO card. After we funded all of our necessary expenses we added an extra $200 payment for the DEMO card this month.
-
-<img alt="August Initial Budget" src="/img/credit-cards/CC-08.webp" />
-<br />
-<img alt="August Budget After Extra" src="/img/credit-cards/CC-09.webp" />
+<img width="693" alt="The Credit Card Debt group in the August budget, with the Citi Card Debt balance of -2,274.00 highlighted" src="/img/budgeting/credit-cards/carrying-debt-first-month-debt-category@2x.webp" />
 
 <br />
 
-In August we receive our DEMO Card statement and we need the following from the account summary:
+On the 1st of September we set our budget and start with our Minimum Payments of $90 for the Citibank card and $50 for the DEMO card. After we funded all of our necessary expenses we added an extra $200 payment for the DEMO card this month.
+
+![The September budget with the minimum payments budgeted for both cards and 209.74 left to budget](/img/budgeting/credit-cards/carrying-debt-second-month-minimums@2x.webp)
+
+![The September budget with 250.00 budgeted for DEMO Card Debt](/img/budgeting/credit-cards/carrying-debt-second-month-extra@2x.webp)
+
+<br />
+
+In September we receive our DEMO Card statement and we need the following from the account summary:
 
 **DEMO Account Summary**
 
@@ -163,7 +166,7 @@ We'll follow [Cards with New Purchases and Original Debt](#debt-with-new) above 
 
 First, we'll enter the Interest & Fees transaction of $32.75, categorize it to **DEMO Card Debt** and start to reconcile our account. When our cleared transactions match the statement New Balance, our DEMO account looks like this:
 
-<img alt="DEMO Credit Card Reconcile" src="/img/credit-cards/CC-010.webp" />
+<img width="860" alt="The DEMO Credit Card account being reconciled, with a cleared total of -2,064.36 and an uncleared total of -126.60" src="/img/budgeting/credit-cards/carrying-debt-demo-reconcile@2x.webp" />
 
 <br />
 
@@ -182,7 +185,7 @@ Our cleared new purchases add up to $846.11 and match our statement, so we're go
   <br /> The difference between the Account Balance of -2190.96 and the Category Balance of -968.25 (2190.96 - 968.25 = 1222.71)
 - We send DEMO Bank $1,222.71 and use _Make Transfer_ to transfer that amount from the Checking account we used to pay the bill. Our DEMO Account now looks like this:
 
-<img alt="DEMO Credit Card Payment" src="/img/credit-cards/CC-011.webp" />
+<img width="860" alt="The DEMO Credit Card register with the 1,222.71 payment from Bank of America highlighted" src="/img/budgeting/credit-cards/carrying-debt-demo-payment@2x.webp" />
 
 <br />
 
@@ -190,13 +193,13 @@ We complete the Reconciliation and we are done with this account!
 
 For our Citibank card this month we'll pay the **Budgeted** expected Minimum Payment of $90.00.
 
-<img alt="Citibank August Payment" src="/img/credit-cards/CC-012.webp" />
+<img width="860" alt="The Citibank Credit Card register with the 90.00 payment from Bank of America highlighted" src="/img/budgeting/credit-cards/carrying-debt-citibank-second-payment@2x.webp" />
 
 <br />
 
 We have reduced our original debt to DEMO Bank to $968.25 and Citibank to $2,247.00. You can notice that for this snapshot in time, our credit card balances match our outstanding debt in the Budget.
 
-<img alt="August Budget Snapshot" src="/img/credit-cards/CC-013.webp" />
+![The September budget, where the Citibank and DEMO card balances in the sidebar match the Citi Card Debt and DEMO Card Debt balances](/img/budgeting/credit-cards/carrying-debt-second-month-snapshot@2x.webp)
 
 <br />
 

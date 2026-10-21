@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Query } from '@actual-app/core/shared/query';
-import debounce from 'lodash/debounce';
+import { debounce } from 'es-toolkit/compat';
 
 import * as queries from '#queries';
 
@@ -44,7 +44,7 @@ export function useTransactionsSearch({
           setIsSearching(true);
         }
       }, delayMs),
-    [dateFormat, delayMs],
+    [dateFormat, delayMs, resetQueryRef, updateQueryRef],
   );
 
   useEffect(() => {

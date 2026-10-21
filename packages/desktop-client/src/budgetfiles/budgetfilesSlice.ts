@@ -1,6 +1,6 @@
 import { send } from '@actual-app/core/platform/client/connection';
 import type { RemoteFile } from '@actual-app/core/server/cloud-storage';
-import { getDownloadError, getSyncError } from '@actual-app/core/shared/errors';
+import { getUnsafeZipMeta } from '@actual-app/core/shared/errors';
 import type { Budget } from '@actual-app/core/types/budget';
 import type { File } from '@actual-app/core/types/file';
 import type { Handlers } from '@actual-app/core/types/handlers';
@@ -13,6 +13,7 @@ import { closeModal, pushModal } from '#modals/modalsSlice';
 import { loadGlobalPrefs, loadPrefs } from '#prefs/prefsSlice';
 import { createAppAsyncThunk } from '#redux';
 import { signOut } from '#users/usersSlice';
+import { getDownloadError, getSyncError, getUnsafeZipError } from '#util/error';
 
 const sliceName = 'budgetfiles';
 
@@ -243,9 +244,10 @@ type ImportBudgetPayload = {
 export const importBudget = createAppAsyncThunk(
   `${sliceName}/importBudget`,
   async ({ filepath, type }: ImportBudgetPayload, { dispatch }) => {
-    const { error } = await send('import-budget', { filepath, type });
+    const { error, meta } = await send('import-budget', { filepath, type });
     if (error) {
-      throw new Error(error);
+      const zipMeta = getUnsafeZipMeta(meta);
+      throw new Error(zipMeta ? getUnsafeZipError(zipMeta) : error);
     }
 
     dispatch(closeModal());
@@ -284,25 +286,30 @@ export const closeAndLoadBudget = createAppAsyncThunk(
 
 type CloseAndDownloadBudgetPayload = {
   cloudFileId: string;
+  localId?: string;
 };
 
 export const closeAndDownloadBudget = createAppAsyncThunk(
   `${sliceName}/closeAndDownloadBudget`,
-  async ({ cloudFileId }: CloseAndDownloadBudgetPayload, { dispatch }) => {
+  async (
+    { cloudFileId, localId }: CloseAndDownloadBudgetPayload,
+    { dispatch },
+  ) => {
     await dispatch(closeBudget());
-    await dispatch(downloadBudget({ cloudFileId, replace: true }));
+    await dispatch(downloadBudget({ cloudFileId, localId, replace: true }));
   },
 );
 
 type DownloadBudgetPayload = {
   cloudFileId: string;
+  localId?: string;
   replace?: boolean;
 };
 
 export const downloadBudget = createAppAsyncThunk(
   `${sliceName}/downloadBudget`,
   async (
-    { cloudFileId, replace = false }: DownloadBudgetPayload,
+    { cloudFileId, localId, replace = false }: DownloadBudgetPayload,
     { dispatch },
   ): Promise<string | null> => {
     dispatch(
@@ -313,6 +320,7 @@ export const downloadBudget = createAppAsyncThunk(
 
     const { id, error } = await send('download-budget', {
       cloudFileId,
+      localId,
     });
 
     if (error) {
@@ -326,7 +334,7 @@ export const downloadBudget = createAppAsyncThunk(
           ),
           cloudFileId,
           onSuccess: () => {
-            void dispatch(downloadBudget({ cloudFileId, replace }));
+            void dispatch(downloadBudget({ cloudFileId, localId, replace }));
           },
         };
 
@@ -356,7 +364,7 @@ export const downloadBudget = createAppAsyncThunk(
         );
 
         return await dispatch(
-          downloadBudget({ cloudFileId, replace: true }),
+          downloadBudget({ cloudFileId, localId, replace: true }),
         ).unwrap();
       } else {
         dispatch(setAppState({ loadingText: null }));

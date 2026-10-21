@@ -9,6 +9,8 @@ import { q } from '#shared/query';
 import { groupBy, sortByKey } from '#shared/util';
 import type { RecurConfig, RecurPattern, RuleEntity } from '#types/models';
 
+import { runImportSteps } from './progress';
+import type { ImportTick } from './progress';
 import type {
   Budget,
   Payee,
@@ -78,9 +80,9 @@ function getDayOfMonth(date: string) {
   return monthUtils.parseDate(date).getDate();
 }
 
-function getYnabMonthlyPatterns(dateFirst: string): RecurPattern[] | undefined {
+function getYnabMonthlyPatterns(dateFirst: string): RecurPattern[] {
   if (getDayOfMonth(dateFirst) !== 31) {
-    return undefined;
+    return [];
   }
 
   return [
@@ -267,7 +269,11 @@ function buildRuleUpdate(
   };
 }
 
-function importAccounts(data: Budget, entityIdMap: Map<string, string>) {
+function importAccounts(
+  data: Budget,
+  entityIdMap: Map<string, string>,
+  tick: ImportTick,
+) {
   return Promise.all(
     data.accounts.map(async account => {
       if (!account.deleted) {
@@ -279,6 +285,7 @@ function importAccounts(data: Budget, entityIdMap: Map<string, string>) {
           },
         });
         entityIdMap.set(account.id, id);
+        tick();
       }
     }),
   );
@@ -287,13 +294,12 @@ function importAccounts(data: Budget, entityIdMap: Map<string, string>) {
 async function importCategories(
   data: Budget,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   // Hidden categories are put in its own group by YNAB,
   // so it's already handled.
 
-  const categories = await send('api/categories-get', {
-    grouped: false,
-  });
+  const categories = await send('api/categories-get');
   const incomeCatId = findIdByName(categories, 'Income');
   const ynabIncomeCategories = ['To be Budgeted', 'Inflow: Ready to Assign'];
 
@@ -392,6 +398,7 @@ async function importCategories(
         });
         groupId = createdGroup.id;
         entityIdMap.set(group.id, groupId);
+        tick();
         if (group.note) {
           void send('notes-save', {
             id: groupId,
@@ -433,6 +440,7 @@ async function importCategories(
                 hidden: cat.hidden,
               });
               entityIdMap.set(cat.id, createdCategory.id);
+              tick();
               if (cat.note) {
                 void send('notes-save', {
                   id: createdCategory.id,
@@ -447,14 +455,19 @@ async function importCategories(
   }
 }
 
-function importPayees(data: Budget, entityIdMap: Map<string, string>) {
+export function importPayees(
+  data: Budget,
+  entityIdMap: Map<string, string>,
+  tick?: ImportTick,
+) {
   return Promise.all(
     data.payees.map(async payee => {
-      if (!payee.deleted) {
+      if (!payee.deleted && !payee.transfer_account_id) {
         const id = await send('api/payee-create', {
           payee: { name: payee.name },
         });
         entityIdMap.set(payee.id, id);
+        tick?.();
       }
     }),
   );
@@ -463,6 +476,7 @@ function importPayees(data: Budget, entityIdMap: Map<string, string>) {
 async function importPayeeLocations(
   data: Budget,
   entityIdMap: Map<string, string>,
+  tick: ImportTick,
 ) {
   // If no payee locations data provided, skip import
   if (!data?.payee_locations) {
@@ -503,6 +517,7 @@ async function importPayeeLocations(
         latitude,
         longitude,
       });
+      tick();
     } catch (error) {
       const errorMessage =
         error instanceof Error
@@ -515,10 +530,7 @@ async function importPayeeLocations(
   }
 }
 
-async function importFlagsAsTags(
-  data: Budget,
-  flagNameConflicts: Set<string>,
-): Promise<void> {
+function getTagsToCreate(data: Budget, flagNameConflicts: Set<string>) {
   const tagsToCreate = new Map<string, string | null>();
   const flaggedTransactions = getFlaggedTransactions(data);
 
@@ -551,9 +563,15 @@ async function importFlagsAsTags(
     }
   }
 
-  if (tagsToCreate.size === 0) {
-    return;
-  }
+  return tagsToCreate;
+}
+
+async function importFlagsAsTags(
+  data: Budget,
+  flagNameConflicts: Set<string>,
+  tick: ImportTick,
+): Promise<void> {
+  const tagsToCreate = getTagsToCreate(data, flagNameConflicts);
 
   await Promise.all(
     [...tagsToCreate.entries()].map(async ([tag, color]) => {
@@ -562,19 +580,19 @@ async function importFlagsAsTags(
         color,
         description: 'Imported from YNAB',
       });
+      tick();
     }),
   );
 }
 
-async function importTransactions(
+export async function importTransactions(
   data: Budget,
   entityIdMap: Map<string, string>,
   flagNameConflicts: Set<string>,
+  tick?: ImportTick,
 ) {
   const payees = await send('api/payees-get');
-  const categories = await send('api/categories-get', {
-    grouped: false,
-  });
+  const categories = await send('api/categories-get');
   const incomeCatId = findIdByName(categories, 'Income');
   const startingBalanceCatId = findIdByName(categories, 'Starting Balances'); //better way to do it?
 
@@ -843,14 +861,19 @@ async function importTransactions(
         learnCategories: true,
         runTransfers: false,
       });
+      tick?.(
+        toImport.length,
+        data.accounts.find(account => account.id === accountId)?.name,
+      );
     }),
   );
 }
 
-async function importScheduledTransactions(
+export async function importScheduledTransactions(
   data: Budget,
   entityIdMap: Map<string, string>,
   flagNameConflicts: Set<string>,
+  tick: ImportTick,
 ) {
   const scheduledTransactions = data.scheduled_transactions;
   const scheduledSubtransactionsGrouped = groupBy(
@@ -869,6 +892,7 @@ async function importScheduledTransactions(
   const scheduleCategoryMap = new Map<string, string>();
   const scheduleSplitsMap = new Map<string, ScheduledSubtransaction[]>();
   const schedulePayeeMap = new Map<string, string>();
+  const deferredTicks = new Map<string, ImportTick>();
 
   async function createScheduleWithUniqueName(params: {
     name: string;
@@ -986,11 +1010,17 @@ async function importScheduledTransactions(
 
     if (scheduledSubtransactions.length > 0) {
       scheduleSplitsMap.set(scheduleId, scheduledSubtransactions);
+      deferredTicks.set(scheduleId, tick);
     } else if (!scheduled.transfer_account_id && scheduled.category_id) {
       const mappedCategoryId = entityIdMap.get(scheduled.category_id);
       if (mappedCategoryId) {
         scheduleCategoryMap.set(scheduleId, mappedCategoryId);
+        deferredTicks.set(scheduleId, tick);
       }
+    }
+
+    if (!deferredTicks.has(scheduleId)) {
+      tick();
     }
   }
 
@@ -998,6 +1028,7 @@ async function importScheduledTransactions(
     for (const [scheduleId, categoryId] of scheduleCategoryMap.entries()) {
       const rule = await getRuleForSchedule(scheduleId);
       if (!rule) {
+        deferredTicks.get(scheduleId)?.();
         continue;
       }
 
@@ -1011,11 +1042,13 @@ async function importScheduledTransactions(
       await send('api/rule-update', {
         rule: buildRuleUpdate(rule, actions),
       });
+      deferredTicks.get(scheduleId)?.();
     }
 
     for (const [scheduleId, subtransactions] of scheduleSplitsMap.entries()) {
       const rule = await getRuleForSchedule(scheduleId);
       if (!rule) {
+        deferredTicks.get(scheduleId)?.();
         continue;
       }
 
@@ -1090,11 +1123,16 @@ async function importScheduledTransactions(
       await send('api/rule-update', {
         rule: buildRuleUpdate(rule, actions),
       });
+      deferredTicks.get(scheduleId)?.();
     }
   }
 }
 
-async function importBudgets(data: Budget, entityIdMap: Map<string, string>) {
+async function importBudgets(
+  data: Budget,
+  entityIdMap: Map<string, string>,
+  tick: ImportTick,
+) {
   // There should be info in the docs to deal with
   // no credit card category and how YNAB and Actual
   // handle differently the amount To be Budgeted
@@ -1139,6 +1177,7 @@ async function importBudgets(data: Budget, entityIdMap: Map<string, string>) {
           });
         }),
       );
+      tick();
     }
   } finally {
     await send('api/batch-budget-end');
@@ -1150,7 +1189,11 @@ export function parseFile(buffer: Buffer): Budget {
   if (data.data) {
     data = data.data;
   }
-  if (data.budget) {
+  // YNAB renamed the top-level wrapper from `budget` to `plan` (API v1.78+).
+  // Older exports and third-party tools still emit `budget`, so accept both.
+  if (data.plan) {
+    data = data.plan;
+  } else if (data.budget) {
     data = data.budget;
   }
 
@@ -1165,29 +1208,54 @@ export async function doImport(data: Budget) {
   const entityIdMap = new Map<string, string>();
   const flagNameConflicts = getFlagNameConflicts(data);
 
-  logger.log('Importing Accounts...');
-  await importAccounts(data, entityIdMap);
+  await runImportSteps([
+    {
+      step: 'accounts',
+      total: countLive(data.accounts),
+      run: tick => importAccounts(data, entityIdMap, tick),
+    },
+    {
+      step: 'categories',
+      total: countLive(data.category_groups) + countLive(data.categories),
+      run: tick => importCategories(data, entityIdMap, tick),
+    },
+    {
+      step: 'payees',
+      total: data.payees.filter(
+        payee => !payee.deleted && !payee.transfer_account_id,
+      ).length,
+      run: tick => importPayees(data, entityIdMap, tick),
+    },
+    {
+      step: 'payee-locations',
+      total: countLive(data.payee_locations ?? []),
+      run: tick => importPayeeLocations(data, entityIdMap, tick),
+    },
+    {
+      step: 'tags',
+      total: getTagsToCreate(data, flagNameConflicts).size,
+      run: tick => importFlagsAsTags(data, flagNameConflicts, tick),
+    },
+    {
+      step: 'transactions',
+      total: data.transactions.length,
+      run: tick =>
+        importTransactions(data, entityIdMap, flagNameConflicts, tick),
+    },
+    {
+      step: 'scheduled-transactions',
+      total: data.scheduled_transactions.length,
+      run: tick =>
+        importScheduledTransactions(data, entityIdMap, flagNameConflicts, tick),
+    },
+    {
+      step: 'budgets',
+      total: data.months.length,
+      run: tick => importBudgets(data, entityIdMap, tick),
+    },
+  ]);
+}
 
-  logger.log('Importing Categories...');
-  await importCategories(data, entityIdMap);
-
-  logger.log('Importing Payees...');
-  await importPayees(data, entityIdMap);
-
-  logger.log('Importing Payee Locations...');
-  await importPayeeLocations(data, entityIdMap);
-
-  logger.log('Importing Tags...');
-  await importFlagsAsTags(data, flagNameConflicts);
-
-  logger.log('Importing Transactions...');
-  await importTransactions(data, entityIdMap, flagNameConflicts);
-
-  logger.log('Importing Scheduled Transactions...');
-  await importScheduledTransactions(data, entityIdMap, flagNameConflicts);
-
-  logger.log('Importing Budgets...');
-  await importBudgets(data, entityIdMap);
-
-  logger.log('Setting up...');
+function countLive(entities: { deleted?: boolean }[]) {
+  return entities.filter(entity => !entity.deleted).length;
 }

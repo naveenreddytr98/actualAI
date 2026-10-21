@@ -3,11 +3,12 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import type { RefObject } from 'react';
+import type { ReactNode } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { useLocation, useParams, useSearchParams } from 'react-router';
 
@@ -31,22 +32,17 @@ import {
 import { styles } from '@actual-app/components/styles';
 import { Text } from '@actual-app/components/text';
 import { theme } from '@actual-app/components/theme';
-import { Toggle } from '@actual-app/components/toggle';
 import { View } from '@actual-app/components/view';
 import { send } from '@actual-app/core/platform/client/connection';
 import { DEFAULT_MAX_DISTANCE_METERS } from '@actual-app/core/shared/constants';
 import { calculateDistance } from '@actual-app/core/shared/location-utils';
 import * as monthUtils from '@actual-app/core/shared/months';
-import * as Platform from '@actual-app/core/shared/platform';
 import { q } from '@actual-app/core/shared/query';
-import {
-  getStatusLabel,
-  getUpcomingDays,
-} from '@actual-app/core/shared/schedules';
+import { DEFAULT_UPCOMING_SCHEDULE_DAYS } from '@actual-app/core/shared/schedules';
 import {
   addSplitTransaction,
   deleteTransaction,
-  makeChild,
+  makeEmptySplitSubtransactions,
   realizeTempTransactions,
   splitTransaction,
   ungroupTransactions,
@@ -68,7 +64,6 @@ import type {
   PayeeEntity,
   TransactionEntity,
 } from '@actual-app/core/types/models';
-import { css } from '@emotion/css';
 import {
   format as formatDate,
   isValid as isValidDate,
@@ -76,6 +71,8 @@ import {
   parseISO,
 } from 'date-fns';
 
+import { NoteInsertHashButton } from '#components/autocomplete/NoteInsertHashButton';
+import { NoteTagAutocomplete } from '#components/autocomplete/NoteTagAutocomplete';
 import { MobileBackButton } from '#components/mobile/MobileBackButton';
 import {
   FieldLabel,
@@ -85,15 +82,18 @@ import {
 } from '#components/mobile/MobileForms';
 import { getPrettyPayee } from '#components/mobile/utils';
 import { MobilePageHeader, Page } from '#components/Page';
-import { createSingleTimeScheduleFromTransaction } from '#components/transactions/TransactionList';
-import { AmountInput } from '#components/util/AmountInput';
+import {
+  propagateRuleChangeToSubtransactions,
+  transactionForRulesFromList,
+} from '#components/transactions/applyRulesToTransaction';
+import {
+  getClearedFieldNames,
+  shouldApplyRuleChange,
+  trackClearedField,
+} from '#components/transactions/table/utils';
 import { useAccounts } from '#hooks/useAccounts';
 import { useCategories } from '#hooks/useCategories';
-import { useCurrentWordRange } from '#hooks/useCurrentWordRange';
-import { useCursorPosition } from '#hooks/useCursorPosition';
 import { useDateFormat } from '#hooks/useDateFormat';
-import { useInitialMount } from '#hooks/useInitialMount';
-import { useInputRefValue } from '#hooks/useInputRefValue';
 import { useLocalPref } from '#hooks/useLocalPref';
 import { useLocationPermission } from '#hooks/useLocationPermission';
 import { useNavigate } from '#hooks/useNavigate';
@@ -104,8 +104,6 @@ import {
   useSingleActiveEditForm,
 } from '#hooks/useSingleActiveEditForm';
 import { useSyncedPref } from '#hooks/useSyncedPref';
-import { useTagCSS } from '#hooks/useTagCSS';
-import { useFilteredTags } from '#hooks/useTags';
 import { pushModal } from '#modals/modalsSlice';
 import { addNotification } from '#notifications/notificationsSlice';
 import { useSavePayeeLocationMutation } from '#payees';
@@ -113,8 +111,15 @@ import { locationService } from '#payees/location';
 import { aqlQuery } from '#queries/aqlQuery';
 import { useDispatch, useSelector } from '#redux';
 import { setLastTransaction } from '#transactions/transactionsSlice';
+import { getStatusLabel } from '#util/schedule';
+import {
+  calculateFutureTransactionInfo,
+  createSingleTimeScheduleFromTransaction,
+  isFutureTransaction,
+} from '#util/schedule-actions';
 
-import { FocusableAmountInput } from './FocusableAmountInput';
+import { AmountInput } from './AmountInput';
+import { SplitAmountInput } from './SplitAmountInput';
 
 function getFieldName(transactionId: TransactionEntity['id'], field: string) {
   return `${field}-${transactionId}`;
@@ -235,10 +240,12 @@ type FooterProps = {
   isAdding: boolean;
   onAdd: () => void;
   onSave: () => void;
+  onSchedule: () => void;
   onSplit: (id: TransactionEntity['id']) => void;
   onAddSplit: (id: TransactionEntity['id']) => void;
   onEmptySplitFound: (id: TransactionEntity['id']) => void;
   editingField?: string;
+  isFuture: boolean;
   onEditField: (
     id: TransactionEntity['id'],
     field: 'category' | 'payee' | 'account' | 'date' | 'amount' | 'notes',
@@ -250,11 +257,13 @@ function Footer({
   isAdding,
   onAdd,
   onSave,
+  onSchedule,
   onSplit,
   onAddSplit,
   onEmptySplitFound,
   editingField,
   onEditField,
+  isFuture,
 }: FooterProps) {
   const [transaction, ...childTransactions] = transactions;
   const emptySplitTransaction = childTransactions.find(t => t.amount === 0);
@@ -281,8 +290,27 @@ function Footer({
         backgroundColor: theme.tableHeaderBackground,
         borderTopWidth: 1,
         borderColor: theme.tableBorder,
+        gap: 8,
       }}
     >
+      {isFuture && (
+        <Button
+          variant="normal"
+          style={{ height: styles.mobileMinHeight }}
+          isDisabled={!!editingField}
+          onPress={onSchedule}
+        >
+          <SvgCalendar width={17} height={17} />
+          <Text
+            style={{
+              ...styles.text,
+              marginLeft: 6,
+            }}
+          >
+            <Trans>Schedule</Trans>
+          </Text>
+        </Button>
+      )}
       {transaction.error?.type === 'SplitTransactionError' ? (
         <Button
           variant="primary"
@@ -380,9 +408,10 @@ function Footer({
 }
 
 type ChildTransactionEditProps = {
+  keyboardHeader: ReactNode;
   transaction: TransactionEntity;
+  negate: boolean;
   amountFocused: boolean;
-  amountSign: '+' | '-';
   getCategory: (transaction: TransactionEntity, isOffBudget: boolean) => string;
   getPayee: (transaction: TransactionEntity) => PayeeEntity | undefined;
   getTransferAccount: (
@@ -409,8 +438,8 @@ const ChildTransactionEdit = forwardRef<
   (
     {
       transaction,
+      negate,
       amountFocused,
-      amountSign,
       getCategory,
       getPayee,
       getTransferAccount,
@@ -419,13 +448,13 @@ const ChildTransactionEdit = forwardRef<
       onEditField,
       onUpdate,
       onDelete,
+      keyboardHeader,
     },
     ref,
   ) => {
     const { t } = useTranslation();
     const { editingField, onRequestActiveEdit, onClearActiveEdit } =
       useSingleActiveEditForm()!;
-    const [hideFraction, _] = useSyncedPref('hideFraction');
     const noteRef = useRef<HTMLInputElement | null>(null);
 
     const prettyPayee = getPrettyPayee({
@@ -454,7 +483,11 @@ const ChildTransactionEdit = forwardRef<
             <FieldLabel title={t('Payee')} />
             <TapField
               icon={<SvgUser width={17} height={17} />}
-              placeholder={t('Who did you pay?')}
+              placeholder={
+                transaction.amount > 0
+                  ? t('Who paid you?')
+                  : t('Who did you pay?')
+              }
               rightContent={dropdownChevron}
               isDisabled={
                 !!editingField &&
@@ -471,32 +504,25 @@ const ChildTransactionEdit = forwardRef<
             }}
           >
             <FieldLabel title={t('Amount')} style={{ padding: 0 }} />
-            <AmountInput
+            <SplitAmountInput
+              keyboardHeader={keyboardHeader}
               disabled={
                 !!editingField &&
                 editingField !== getFieldName(transaction.id, 'amount')
               }
-              focused={amountFocused}
-              value={amountToInteger(transaction.amount)}
-              zeroSign={amountSign}
-              style={{ marginRight: 8 }}
-              inputStyle={{
-                ...styles.smallText,
-                textAlign: 'right',
-                minWidth: 0,
+              value={transaction.amount}
+              negate={negate}
+              autoFocus={amountFocused}
+              onFocus={event => {
+                onRequestActiveEdit(getFieldName(transaction.id, 'amount'));
+
+                const input = event.currentTarget as HTMLInputElement;
+                input.scrollIntoView({ behavior: 'smooth', block: 'start' });
               }}
-              onFocus={() =>
-                onRequestActiveEdit(getFieldName(transaction.id, 'amount'))
-              }
-              onUpdate={value => {
-                const amount = integerToAmount(value);
-                if (transaction.amount !== amount) {
-                  onUpdate(transaction, 'amount', amount);
-                } else {
-                  onClearActiveEdit();
-                }
+              onBlur={() => onClearActiveEdit()}
+              onChange={amount => {
+                onUpdate(transaction, 'amount', amount);
               }}
-              autoDecimals={String(hideFraction) !== 'true'}
             />
           </View>
         </View>
@@ -530,7 +556,8 @@ const ChildTransactionEdit = forwardRef<
           <FieldLabel title={t('Notes')} />
           <InputField
             ref={noteRef}
-            icon={<SvgNotesPaper width={17} height={17} />}
+            iconStart={<SvgNotesPaper width={17} height={17} />}
+            iconEnd={<NoteInsertHashButton inputRef={noteRef} />}
             placeholder={t('Add a note (optional)')}
             disabled={
               !!editingField &&
@@ -600,6 +627,7 @@ type TransactionEditInnerProps = {
   shouldShowSaveLocation?: boolean;
   onSaveLocation?: () => void;
   onSelectNearestPayee?: () => void;
+  onRequestLocation?: () => void;
   nearestPayee?: PayeeEntity | null;
 };
 
@@ -619,13 +647,14 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
     shouldShowSaveLocation,
     onSaveLocation,
     onSelectNearestPayee,
+    onRequestLocation,
     nearestPayee,
   }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const dispatch = useDispatch();
     const [showHiddenCategories] = useLocalPref('budget.showHiddenCategories');
-    const [upcomingLength = '7'] = useSyncedPref(
+    const [upcomingLength = DEFAULT_UPCOMING_SCHEDULE_DAYS] = useSyncedPref(
       'upcomingScheduledTransactionLength',
     );
     const transactions = useMemo(
@@ -648,13 +677,12 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
 
     const [transaction, ...childTransactions] = transactions;
 
+    const isFuture =
+      unserializedTransactions.length > 0 &&
+      isFutureTransaction(unserializedTransactions[0]);
+
     const { editingField, onRequestActiveEdit, onClearActiveEdit } =
       useSingleActiveEditForm()!;
-    const [totalAmountFocused, setTotalAmountFocused] = useState(
-      // iOS does not support automatically opening up the keyboard for the
-      // total amount field. Hence we should not focus on it on page render.
-      !Platform.isIOSAgent,
-    );
     const childTransactionElementRefMap = useRef<
       Record<TransactionEntity['id'], HTMLDivElement | null>
     >({});
@@ -662,21 +690,6 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
 
     const payeesById = useMemo(() => groupById(payees), [payees]);
     const accountsById = useMemo(() => groupById(accounts), [accounts]);
-
-    const onTotalAmountEdit = useCallback(() => {
-      onRequestActiveEdit?.(getFieldName(transaction.id, 'amount'), () => {
-        setTotalAmountFocused(true);
-        return () => setTotalAmountFocused(false);
-      });
-    }, [onRequestActiveEdit, transaction.id]);
-
-    const isInitialMount = useInitialMount();
-
-    useEffect(() => {
-      if (isInitialMount && isAdding && !Platform.isIOSAgent) {
-        onTotalAmountEdit();
-      }
-    }, [isAdding, isInitialMount, onTotalAmountEdit]);
 
     const getAccount = useCallback(
       (trans: TransactionEntity) => {
@@ -724,8 +737,6 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
     );
 
     const onSaveInner = useCallback(async () => {
-      const [unserializedTransaction] = unserializedTransactions;
-
       const onConfirmSave = () => {
         let transactionsToSave = unserializedTransactions;
         if (isAdding) {
@@ -737,71 +748,6 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
         onSave(transactionsToSave);
         void navigate(-1);
       };
-
-      const today = monthUtils.currentDay();
-      const isFuture = unserializedTransaction.date > today;
-      const isLinkedToSchedule = !!unserializedTransaction.schedule;
-
-      if (isFuture && !isLinkedToSchedule) {
-        const upcomingDays = getUpcomingDays(upcomingLength, today);
-        const daysUntilTransaction = monthUtils.differenceInCalendarDays(
-          unserializedTransaction.date,
-          today,
-        );
-        const isBeyondWindow = daysUntilTransaction > upcomingDays;
-
-        dispatch(
-          pushModal({
-            modal: {
-              name: 'convert-to-schedule',
-              options: {
-                isBeyondWindow,
-                daysUntilTransaction,
-                upcomingDays,
-                onConfirm: async () => {
-                  if (
-                    !isAdding &&
-                    unserializedTransaction.id &&
-                    !unserializedTransaction.id.startsWith('temp')
-                  ) {
-                    await send('transaction-delete', {
-                      id: unserializedTransaction.id,
-                    });
-                  }
-
-                  const transactionForSchedule =
-                    unserializedTransaction.is_parent
-                      ? {
-                          ...unserializedTransaction,
-                          subtransactions: unserializedTransactions.filter(
-                            t =>
-                              t.is_child &&
-                              t.parent_id === unserializedTransaction.id,
-                          ),
-                        }
-                      : unserializedTransaction;
-
-                  await createSingleTimeScheduleFromTransaction(
-                    transactionForSchedule,
-                  );
-
-                  dispatch(
-                    addNotification({
-                      notification: {
-                        type: 'message',
-                        message: t('Schedule created successfully'),
-                      },
-                    }),
-                  );
-                  void navigate(-1);
-                },
-                onCancel: onConfirmSave,
-              },
-            },
-          }),
-        );
-        return;
-      }
 
       if (unserializedTransactions.some(t => t.reconciled)) {
         // On mobile any save gives the warning.
@@ -852,11 +798,111 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
           onConfirmSave();
         }
       }
+    }, [isAdding, dispatch, navigate, onSave, unserializedTransactions]);
+
+    const onSchedule = useCallback(async () => {
+      const [unserializedTransaction] = unserializedTransactions;
+
+      if (!unserializedTransaction.account) {
+        dispatch(
+          addNotification({
+            notification: {
+              type: 'error',
+              message: t('Account is a required field'),
+            },
+          }),
+        );
+        return;
+      }
+
+      // Already linked to a schedule; keep it as a transaction.
+      if (unserializedTransaction.schedule) {
+        return;
+      }
+
+      const transactionForSchedule = unserializedTransaction.is_parent
+        ? {
+            ...unserializedTransaction,
+            subtransactions: unserializedTransactions.filter(
+              t => t.is_child && t.parent_id === unserializedTransaction.id,
+            ),
+          }
+        : unserializedTransaction;
+
+      const createSchedule = async () => {
+        try {
+          await createSingleTimeScheduleFromTransaction(transactionForSchedule);
+        } catch {
+          dispatch(
+            addNotification({
+              notification: {
+                type: 'error',
+                message: t('Failed to create schedule'),
+              },
+            }),
+          );
+          return;
+        }
+
+        try {
+          if (
+            !isAdding &&
+            unserializedTransaction.id &&
+            !unserializedTransaction.id.startsWith('temp')
+          ) {
+            await send('transaction-delete', {
+              id: unserializedTransaction.id,
+            });
+          }
+        } catch {
+          dispatch(
+            addNotification({
+              notification: {
+                type: 'error',
+                message: t(
+                  'Schedule created, but the original transaction could not be deleted',
+                ),
+              },
+            }),
+          );
+          void navigate(-1);
+          return;
+        }
+
+        dispatch(
+          addNotification({
+            notification: {
+              type: 'message',
+              message: t('Schedule created successfully'),
+            },
+          }),
+        );
+        void navigate(-1);
+      };
+
+      const { isBeyondWindow, daysUntilTransaction, upcomingDays } =
+        calculateFutureTransactionInfo(transactionForSchedule, upcomingLength);
+
+      if (isBeyondWindow) {
+        dispatch(
+          pushModal({
+            modal: {
+              name: 'convert-to-schedule',
+              options: {
+                daysUntilTransaction,
+                upcomingDays,
+                onConfirm: createSchedule,
+              },
+            },
+          }),
+        );
+      } else {
+        await createSchedule();
+      }
     }, [
       isAdding,
       dispatch,
       navigate,
-      onSave,
       unserializedTransactions,
       upcomingLength,
       t,
@@ -877,6 +923,29 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
         }
       },
       [onClearActiveEdit, onUpdate],
+    );
+
+    const onUnlockReconciledInner = useCallback(
+      (serializedTransaction: TransactionEntity) => {
+        dispatch(
+          pushModal({
+            modal: {
+              name: 'confirm-transaction-edit',
+              options: {
+                confirmReason: 'unlockReconciled',
+                onConfirm: () => {
+                  void onUpdateInner(
+                    serializedTransaction,
+                    'reconciled',
+                    false,
+                  );
+                },
+              },
+            },
+          }),
+        );
+      },
+      [dispatch, onUpdateInner],
     );
 
     const onTotalAmountUpdate = useCallback(
@@ -956,6 +1025,7 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
                   modal: {
                     name: 'payee-autocomplete',
                     options: {
+                      showNoneOption: !!transactionToEdit.payee,
                       onSelect: payeeId => {
                         void onUpdateInner(transactionToEdit, name, payeeId);
                       },
@@ -1114,10 +1184,6 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
       [scrollChildTransactionIntoView],
     );
 
-    // Child transactions should always default to the signage
-    // of the parent transaction
-    const childAmountSign = transaction.amount <= 0 ? '-' : '+';
-
     const account = getAccount(transaction);
     const isOffBudget = account ? !!account.offbudget : false;
     const title = getPrettyPayee({
@@ -1127,8 +1193,15 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
       transferAccount: getTransferAccount(transaction),
     });
 
-    const transactionDate = parseDate(transaction.date, dateFormat, new Date());
+    const [referenceDate] = useState(() => new Date());
+    const transactionDate = parseDate(
+      transaction.date,
+      dateFormat,
+      referenceDate,
+    );
     const dateDefaultValue = monthUtils.dayFromDate(transactionDate);
+
+    const remaining = transaction.error?.difference ?? 0;
 
     return (
       <Page
@@ -1150,10 +1223,12 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             isAdding={isAdding}
             onAdd={onSaveInner}
             onSave={onSaveInner}
+            onSchedule={onSchedule}
             onSplit={onSplit}
             onAddSplit={onAddSplit}
             onEmptySplitFound={onEmptySplitFound}
             editingField={editingField}
+            isFuture={isFuture}
             onEditField={onEditFieldInner}
           />
         }
@@ -1169,21 +1244,21 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             }}
           >
             <FieldLabel title={t('Amount')} flush style={{ marginBottom: 0 }} />
-            <FocusableAmountInput
+            <AmountInput
               value={transaction.amount}
-              zeroSign="-"
-              focused={totalAmountFocused}
-              onFocus={onTotalAmountEdit}
-              onBlur={() => onClearActiveEdit()}
-              onUpdateAmount={onTotalAmountUpdate}
-              focusedStyle={{
-                width: 'auto',
-                padding: '5px',
-                paddingLeft: '20px',
-                paddingRight: '20px',
-                minWidth: '100%',
+              negate
+              disabled={
+                !!editingField &&
+                editingField !== getFieldName(transaction.id, 'amount')
+              }
+              autoFocus={isAdding}
+              disableNativeAutoFocusOnIOS
+              onFocus={() => {
+                onRequestActiveEdit(getFieldName(transaction.id, 'amount'));
               }}
-              textStyle={{ ...styles.veryLargeText, textAlign: 'center' }}
+              onBlur={() => onClearActiveEdit()}
+              onChange={onTotalAmountUpdate}
+              variant="large"
             />
           </View>
 
@@ -1191,7 +1266,11 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             <FieldLabel title={t('Payee')} />
             <TapField
               icon={<SvgUser width={17} height={17} />}
-              placeholder={t('Who did you pay?')}
+              placeholder={
+                transaction.amount > 0
+                  ? t('Who paid you?')
+                  : t('Who did you pay?')
+              }
               textStyle={{
                 ...(transaction.is_parent && {
                   fontStyle: 'italic',
@@ -1206,7 +1285,9 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
               onPress={() => onEditFieldInner(transaction.id, 'payee')}
               data-testid="payee-field"
               alwaysShowRightContent={
-                !!nearestPayee && !transaction.payee && !shouldShowSaveLocation
+                (!!nearestPayee || !!onRequestLocation) &&
+                !transaction.payee &&
+                !shouldShowSaveLocation
               }
               rightContent={
                 shouldShowSaveLocation ? (
@@ -1253,6 +1334,28 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
                       style={{ marginLeft: 4 }}
                     />
                   </Button>
+                ) : onRequestLocation && !transaction.payee ? (
+                  <Button
+                    variant="bare"
+                    onPress={onRequestLocation}
+                    style={{
+                      backgroundColor: theme.buttonNormalBackground,
+                      border: `1px solid ${theme.buttonNormalBorder}`,
+                      color: theme.buttonNormalText,
+                      fontSize: '11px',
+                      padding: '4px 8px',
+                      borderRadius: 3,
+                      height: 'auto',
+                      minHeight: 'auto',
+                    }}
+                  >
+                    <Trans>Request Location</Trans>
+                    <SvgLocation
+                      width={10}
+                      height={10}
+                      style={{ marginLeft: 4 }}
+                    />
+                  </Button>
                 ) : (
                   dropdownChevron
                 )
@@ -1292,8 +1395,8 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             <ChildTransactionEdit
               key={childTrans.id}
               transaction={childTrans}
+              negate={transaction.amount <= 0}
               amountFocused={arr.findIndex(c => c.amount === 0) === i}
-              amountSign={childAmountSign}
               ref={r => {
                 childTransactionElementRefMap.current = {
                   ...childTransactionElementRefMap.current,
@@ -1308,6 +1411,18 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
               onUpdate={onUpdateInner}
               onEditField={onEditFieldInner}
               onDelete={onDeleteInner}
+              keyboardHeader={
+                <FillRemainingButton
+                  remaining={remaining}
+                  onPress={() => {
+                    void onUpdateInner(
+                      childTrans,
+                      'amount',
+                      integerToAmount(remaining),
+                    );
+                  }}
+                />
+              }
             />
           ))}
 
@@ -1365,7 +1480,7 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
               <FieldLabel title={t('Date')} />
               <InputField
                 type="date"
-                icon={<SvgCalendar width={17} height={17} />}
+                iconStart={<SvgCalendar width={17} height={17} />}
                 disabled={
                   !!editingField &&
                   editingField !== getFieldName(transaction.id, 'date')
@@ -1393,7 +1508,11 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             {transaction.reconciled ? (
               <View style={{ alignItems: 'center' }}>
                 <FieldLabel title={t('Reconciled')} />
-                <Toggle id="Reconciled" isOn isDisabled />
+                <ToggleField
+                  id="reconciled"
+                  isOn
+                  onToggle={() => onUnlockReconciledInner(transaction)}
+                />
               </View>
             ) : (
               <View style={{ alignItems: 'center' }}>
@@ -1411,7 +1530,8 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             <FieldLabel title={t('Notes')} />
             <InputField
               ref={noteRef}
-              icon={<SvgNotesPaper width={17} height={17} />}
+              iconStart={<SvgNotesPaper width={17} height={17} />}
+              iconEnd={<NoteInsertHashButton inputRef={noteRef} />}
               placeholder={t('Add a note (optional)')}
               disabled={
                 !!editingField &&
@@ -1466,151 +1586,6 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
   },
 );
 
-function NoteTagAutocomplete({
-  inputRef,
-}: {
-  inputRef: RefObject<HTMLInputElement | null>;
-}) {
-  const dispatch = useDispatch();
-  // Yes, there is a lot of ref usages in this component. Here's the motivation
-  // 1. This component purely modifies HTML Input state, app state is handled elsewhere
-  // 2. This component deals with cursor state, which is not easily accessible through regular React code
-  // 3. Child transaction notes (transaction.notes) does not update until blur, so we have to use input state
-  // 4. Given we are already using inputRef in multiple locations, I elected to simplify the props to just the ref and use HTML/JS events
-
-  const [note, setNote] = useInputRefValue(inputRef);
-
-  const [cursorPosition] = useCursorPosition(inputRef);
-  const [startIdx, endIdx] = useCurrentWordRange(note, cursorPosition);
-  const currentWord = note.slice(startIdx, endIdx);
-  const currentWordNoHash = currentWord.replace(/^#+/, '');
-  const { data: filteredTags, refetch } = useFilteredTags(currentWord, true);
-  const showNewTag =
-    currentWord.startsWith('#') &&
-    currentWordNoHash &&
-    !filteredTags.some(tag => tag.tag === currentWordNoHash);
-
-  const getTagCSS = useTagCSS({ ellipsis: true });
-
-  function handleSelect(tag: string) {
-    if (!inputRef.current) return;
-    const newValue =
-      note.slice(0, startIdx) + '#' + tag + ' ' + note.slice(endIdx);
-    setNote(newValue);
-    const newPos = startIdx + tag.length + 2;
-
-    inputRef.current.setSelectionRange(newPos, newPos);
-    document.dispatchEvent(new Event('selectionchange'));
-  }
-
-  async function handleCreate(tag: string) {
-    if (!inputRef.current) return;
-    try {
-      await send('tags-create', { tag });
-      void refetch();
-      handleSelect(tag);
-    } catch (e) {
-      dispatch(
-        addNotification({
-          notification: {
-            type: 'error',
-            message: 'Failed to add tag, check logs',
-          },
-        }),
-      );
-      console.trace(e);
-    }
-  }
-
-  const hideScrollbar = css({
-    'scrollbar-width': 'none',
-    '-ms-overflow-style': 'none',
-    '&::-webkit-scrollbar': {
-      display: 'none',
-    },
-  });
-
-  return (
-    <View
-      style={{
-        width: '100%',
-        padding: '4px 8px 4px 8px',
-        borderRadius: 30,
-        overflowX: 'auto',
-        height: filteredTags.length || showNewTag ? 30 : 0,
-        transitionProperty: 'height',
-        transitionDuration: '100ms',
-      }}
-      className={hideScrollbar}
-    >
-      <View
-        style={{
-          display: 'flex',
-          flexDirection: 'row',
-          alignItems: 'end',
-          flexWrap: 'nowrap',
-          gap: 4,
-          paddingRight: 8,
-        }}
-      >
-        {filteredTags.map(tag => (
-          <div key={tag.id}>
-            <button
-              type="button"
-              style={{
-                border: 'none',
-                height: 22,
-                maxWidth: '50dvw',
-              }}
-              className={getTagCSS(tag.tag)}
-              onMouseDown={e => e.preventDefault()} // stops input from losing focus
-              onClick={() => handleSelect(tag.tag)}
-            >
-              #{tag.tag}
-            </button>
-          </div>
-        ))}
-        {showNewTag && (
-          <button
-            type="button"
-            style={{
-              padding: '1px 1px 1px 9px',
-              borderRadius: 12,
-              borderWidth: 0,
-              backgroundColor: theme.noticeBackground,
-              color: theme.noticeTextDark,
-              display: 'flex',
-              alignItems: 'center',
-              flexWrap: 'nowrap',
-              gap: 4,
-            }}
-            onMouseDown={e => e.preventDefault()} // stops input from losing focus
-            onClick={() => handleCreate(currentWordNoHash)}
-          >
-            <SvgAdd height={8} width={8} />
-            <span style={{ whiteSpace: 'nowrap' }}>
-              <Trans>Create tag</Trans>
-            </span>
-            <div
-              style={{
-                borderWidth: 0,
-                height: 20,
-                maxWidth: '50dvw',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                display: 'inline-block',
-              }}
-              className={getTagCSS('')}
-            >
-              #{currentWordNoHash}
-            </div>
-          </button>
-        )}
-      </View>
-    </View>
-  );
-}
-
 function isTemporary(transaction: TransactionEntity) {
   return transaction.id.indexOf('temp') === 0;
 }
@@ -1641,8 +1616,14 @@ function TransactionEditUnconnected({
   const [fetchedTransactions, setFetchedTransactions] = useState<
     TransactionEntity[]
   >([]);
+  const transactionsRef = useRef(transactions);
+  useLayoutEffect(() => {
+    transactionsRef.current = transactions;
+  }, [transactions]);
   const isAdding = useRef(false);
   const isDeleted = useRef(false);
+  const [learnCategories = 'true'] = useSyncedPref('learn-categories');
+  const isLearnCategoriesEnabled = String(learnCategories) === 'true';
 
   const searchParamCategory = useMemo(
     () => categories.find(c => c.name === searchParams.get('category'))?.id,
@@ -1657,9 +1638,15 @@ function TransactionEditUnconnected({
     [payees, searchParams],
   );
 
-  const locationAccess = useLocationPermission();
+  const {
+    isGranted: isLocationGranted,
+    isPending: shouldPromptLocation,
+    requestPermission,
+  } = useLocationPermission();
+  const { data: nearbyPayees = [] } = useNearbyPayees({
+    enabled: isLocationGranted,
+  });
   const [shouldShowSaveLocation, setShouldShowSaveLocation] = useState(false);
-  const { data: nearbyPayees = [] } = useNearbyPayees();
   const nearestPayee = nearbyPayees[0]?.payee ?? null;
 
   useEffect(() => {
@@ -1700,10 +1687,10 @@ function TransactionEditUnconnected({
   }, [transactionId]);
 
   useEffect(() => {
-    if (!locationAccess) {
+    if (!isLocationGranted) {
       setShouldShowSaveLocation(false);
     }
-  }, [locationAccess]);
+  }, [isLocationGranted]);
 
   useEffect(() => {
     if (isAdding.current) {
@@ -1742,6 +1729,12 @@ function TransactionEditUnconnected({
     searchParams,
   ]);
 
+  // Fields the user explicitly emptied while entering the new transaction,
+  // tracked per transaction row so a clear on one split row doesn't affect
+  // its siblings. Rules re-run on every field commit, and they may not
+  // re-fill these (e.g. a cleared pre-assigned category must stay cleared).
+  const clearedFields = useRef(new Map<TransactionEntity['id'], Set<string>>());
+
   const onUpdate = useCallback(
     async (
       serializedTransaction: TransactionEntity,
@@ -1756,57 +1749,132 @@ function TransactionEditUnconnected({
       // Run the rules to auto-fill in any data. Right now we only do
       // this on new transactions because that's how desktop works.
       const newTransaction = { ...transaction };
+      const changedFields = new Set<keyof TransactionEntity>([updatedField]);
       if (isTemporary(newTransaction)) {
+        trackClearedField(clearedFields.current, newTransaction, updatedField);
+        const clearedOnThisRow = getClearedFieldNames(
+          clearedFields.current,
+          newTransaction.id,
+        );
+
+        // Mobile keeps splits as a flat parent+children list. Group them
+        // before rules-run so an already-applied split rule sees existing
+        // children (same as desktop). Otherwise re-running the rule creates
+        // new child ids and later parent edits (notes/account) fail (#9189).
+        const transactionForRules = transactionForRulesFromList(
+          transactionsRef.current,
+          newTransaction,
+        );
+
         const afterRules = await send('rules-run', {
-          transaction: newTransaction,
+          transaction: transactionForRules,
         });
-        const diff = getChangedValues(newTransaction, afterRules);
+        const diff = getChangedValues(transactionForRules, afterRules);
 
         if (diff) {
           Object.keys(diff).forEach(key => {
             const field = key as keyof TransactionEntity;
-            // Update "empty" fields in general
+            // Apply rule changes to "empty" fields and append/prepend notes rules
+            // (see shouldApplyRuleChange).
             // Or update all fields if the payee changes (assists location-based entry by
             // applying rules to prefill category, notes, etc. based on the selected payee)
+            // — except fields the user explicitly cleared, which must stay empty.
             if (
-              newTransaction[field] == null ||
-              newTransaction[field] === '' ||
-              newTransaction[field] === 0 ||
-              newTransaction[field] === false ||
-              updatedField === 'payee'
+              !clearedOnThisRow.includes(field) &&
+              (updatedField === 'payee' ||
+                shouldApplyRuleChange(
+                  field,
+                  Reflect.get(transactionForRules, field),
+                  diff[field],
+                ))
             ) {
               (newTransaction as Record<string, unknown>)[field] = diff[field];
+              changedFields.add(field);
             }
           });
 
-          // When a rule updates a parent transaction, overwrite all changes to the current field in subtransactions.
-          if (
-            newTransaction.is_parent &&
-            diff.subtransactions !== undefined &&
-            updatedField !== null
+          const parentForPropagate: TransactionEntity = {
+            ...transactionForRules,
+            ...newTransaction,
+          };
+          const subtransactions = propagateRuleChangeToSubtransactions(
+            parentForPropagate,
+            diff.subtransactions,
+            updatedField,
+            clearedFields.current,
+          );
+          if (subtransactions) {
+            newTransaction.subtransactions = subtransactions;
+            changedFields.add('subtransactions');
+          } else if (
+            diff.subtransactions &&
+            (updatedField === 'payee' ||
+              shouldApplyRuleChange(
+                'subtransactions',
+                transactionForRules.subtransactions,
+                diff.subtransactions,
+              ))
           ) {
-            newTransaction.subtransactions = diff.subtransactions.map(
-              (st, idx) => ({
-                ...(newTransaction.subtransactions?.[idx] || st),
-                ...(st[updatedField] != null && {
-                  [updatedField]: st[updatedField],
-                }),
-              }),
-            );
+            // First time a split rule converts this row into a parent.
+            newTransaction.subtransactions = diff.subtransactions;
+            changedFields.add('subtransactions');
           }
         }
       }
 
-      const { data: newTransactions } = updateTransaction(
-        transactions,
-        newTransaction,
-      );
-      setTransactions(newTransactions);
+      // Updates can be in flight at the same time (e.g. an amount blur
+      // racing a nearby payee press), so merge only the changed fields onto
+      // the latest state rather than replacing the whole transaction.
+      setTransactions(prevTransactions => {
+        const latestTransaction = prevTransactions.find(
+          t => t.id === newTransaction.id,
+        );
+        if (!latestTransaction) {
+          // The transaction was deleted while this update was in flight.
+          return prevTransactions;
+        }
+        const merged = { ...latestTransaction };
+        for (const field of changedFields) {
+          (merged as Record<string, unknown>)[field] = newTransaction[field];
+        }
+
+        // When editing a split parent without a fresh subtransactions payload
+        // from rules, re-attach the latest children so updateTransaction keeps
+        // the existing split structure.
+        if (
+          !merged.subtransactions &&
+          (merged.is_parent || latestTransaction.is_parent)
+        ) {
+          const children = prevTransactions.filter(
+            t => t.is_child && t.parent_id === merged.id,
+          );
+          merged.subtransactions = children;
+          merged.is_parent = true;
+
+          const updated = updateTransaction(prevTransactions, merged).data;
+          // updateTransaction → makeChild clears child.error; restore any that
+          // were already on the flat list so split-error UI stays correct.
+          const childErrors = new Map(
+            children
+              .filter(c => c.error != null)
+              .map(c => [c.id, c.error!] as const),
+          );
+          if (childErrors.size === 0) {
+            return updated;
+          }
+          return updated.map(t => {
+            const error = childErrors.get(t.id);
+            return error !== undefined ? { ...t, error } : t;
+          });
+        }
+
+        return updateTransaction(prevTransactions, merged).data;
+      });
 
       if (updatedField === 'payee') {
         setShouldShowSaveLocation(false);
 
-        if (newTransaction.payee && locationAccess) {
+        if (newTransaction.payee && isLocationGranted) {
           const payeeLocations = await locationService.getPayeeLocations(
             newTransaction.payee,
           );
@@ -1828,7 +1896,7 @@ function TransactionEditUnconnected({
         }
       }
     },
-    [dateFormat, transactions, locationAccess],
+    [dateFormat, isLocationGranted],
   );
 
   const onSave = useCallback(
@@ -1847,6 +1915,7 @@ function TransactionEditUnconnected({
           added: changes.added,
           deleted: changes.deleted,
           updated: changes.updated,
+          learnCategories: isLearnCategoriesEnabled,
         });
 
         // if (onTransactionsChange) {
@@ -1863,7 +1932,7 @@ function TransactionEditUnconnected({
         dispatch(setLastTransaction({ transaction: newTransactions[0] }));
       }
     },
-    [dispatch, fetchedTransactions],
+    [dispatch, fetchedTransactions, isLearnCategoriesEnabled],
   );
 
   const onDelete = useCallback(
@@ -1898,10 +1967,11 @@ function TransactionEditUnconnected({
 
   const onSplit = useCallback(
     (id: TransactionEntity['id']) => {
-      const changes = splitTransaction(transactions, id, parent => [
-        makeChild(parent),
-        makeChild(parent),
-      ]);
+      const changes = splitTransaction(
+        transactions,
+        id,
+        makeEmptySplitSubtransactions,
+      );
 
       setTransactions(changes.data);
     },
@@ -2069,18 +2139,14 @@ function TransactionEditUnconnected({
         shouldShowSaveLocation={shouldShowSaveLocation}
         onSaveLocation={onSaveLocation}
         onSelectNearestPayee={onSelectNearestPayee}
-        nearestPayee={locationAccess ? nearestPayee : null}
+        nearestPayee={isLocationGranted ? nearestPayee : null}
+        onRequestLocation={shouldPromptLocation ? requestPermission : undefined}
       />
     </View>
   );
 }
 
-type TransactionEditProps = Omit<
-  TransactionEditUnconnectedProps,
-  'categories' | 'accounts' | 'payees' | 'lastTransaction' | 'dateFormat'
->;
-
-export const TransactionEdit = (props: TransactionEditProps) => {
+export const TransactionEdit = () => {
   const { data: { list: categories } = { list: [] } } = useCategories();
   const { data: payees = [] } = usePayees();
   const lastTransaction = useSelector(
@@ -2092,7 +2158,6 @@ export const TransactionEdit = (props: TransactionEditProps) => {
   return (
     <SingleActiveEditFormProvider formName="mobile-transaction">
       <TransactionEditUnconnected
-        {...props}
         categories={categories}
         payees={payees}
         lastTransaction={lastTransaction}
@@ -2102,3 +2167,35 @@ export const TransactionEdit = (props: TransactionEditProps) => {
     </SingleActiveEditFormProvider>
   );
 };
+
+function FillRemainingButton({
+  remaining,
+  onPress,
+}: {
+  readonly remaining: number;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Button
+      variant="primary"
+      style={{ height: styles.mobileMinHeight }}
+      onPress={onPress}
+      isDisabled={remaining === 0}
+    >
+      <SvgSplit width={17} height={17} />
+      <Text
+        style={{
+          ...styles.text,
+          marginLeft: 6,
+        }}
+      >
+        <Trans>
+          Use remaining:{' '}
+          {{
+            amount: integerToCurrency(Math.abs(remaining)),
+          }}
+        </Trans>
+      </Text>
+    </Button>
+  );
+}

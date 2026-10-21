@@ -1,5 +1,15 @@
 import type { RuleConditionEntity } from './rule';
 
+export type CustomReportTagScope =
+  | { mode: 'all' }
+  | { mode: 'selected'; tagIds: string[] };
+
+export type CustomReportMetadata = Record<string, unknown>;
+
+type CustomReportStoredMetadata = CustomReportMetadata & {
+  tagScope?: CustomReportTagScope;
+};
+
 export type CustomReportEntity = {
   id: string;
   name: string;
@@ -9,6 +19,7 @@ export type CustomReportEntity = {
   dateRange: string;
   mode: string;
   groupBy: string;
+  tagScope?: CustomReportTagScope;
   interval: string;
   balanceType: string;
   sortBy?: sortByOpType;
@@ -18,10 +29,11 @@ export type CustomReportEntity = {
   includeCurrentInterval: boolean;
   showUncategorized: boolean;
   trimIntervals: boolean;
+  showTrendLines: boolean;
   graphType: string;
   conditions?: RuleConditionEntity[];
   conditionsOp: 'and' | 'or';
-  metadata?: GroupedEntity;
+  metadata?: CustomReportMetadata;
   tombstone?: boolean;
 };
 
@@ -62,6 +74,11 @@ export type SpendingEntity = {
     compareTo: number;
     budget: number;
   }[];
+  averageRange?: {
+    startMonth: string | null;
+    endMonth: string | null;
+    months: string[];
+  };
   startDate?: string;
   endDate?: string;
   totalDebts: number;
@@ -82,6 +99,7 @@ export type DataEntity = {
   netDebts: number;
   totalTotals: number;
   totalBudgeted: number;
+  scopeTagNames?: string[];
 };
 
 export type LegendEntity = {
@@ -89,10 +107,12 @@ export type LegendEntity = {
   id: string | null;
   color: string;
   dataKey: string; // Uses id for unique data lookup when categories have same name
+  uncategorizedId?: 'off_budget' | 'transfer' | 'other' | 'all';
+  bucketTagNames?: string[];
 };
 
 export type IntervalEntity = {
-  date?: string;
+  date: string;
   change?: number;
   intervalStartDate?: string;
   intervalEndDate?: string;
@@ -107,6 +127,7 @@ export type IntervalEntity = {
 export type GroupedEntity = {
   id: string;
   name: string;
+  uncategorizedId?: 'off_budget' | 'transfer' | 'other' | 'all';
   date?: string;
   intervalData: IntervalEntity[];
   totalAssets: number;
@@ -116,6 +137,7 @@ export type GroupedEntity = {
   netDebts: number;
   totalBudgeted: number;
   categories?: GroupedEntity[];
+  bucketTagNames?: string[];
 };
 
 export type Interval = {
@@ -139,10 +161,11 @@ export type CustomReportData = {
   include_current: number;
   show_uncategorized: number;
   trim_intervals: number;
+  show_trend_lines: number;
   graph_type: string;
   conditions?: RuleConditionEntity[];
   conditions_op: 'and' | 'or';
-  metadata?: GroupedEntity;
+  metadata?: CustomReportStoredMetadata;
   interval: string;
   color_scheme?: string;
 };

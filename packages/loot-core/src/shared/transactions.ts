@@ -58,6 +58,15 @@ export function makeChild<T extends GenericTransactionEntity>(
   } as unknown as T;
 }
 
+export function makeEmptySplitSubtransactions(
+  parent: TransactionEntity,
+): TransactionEntity[] {
+  return [
+    makeChild(parent, { sort_order: -1 }),
+    makeChild(parent, { sort_order: -2 }),
+  ];
+}
+
 function makeNonChild<T extends GenericTransactionEntity>(
   parent: T,
   data: object,
@@ -249,6 +258,7 @@ export function addSplitTransaction(
     trans.subtransactions?.push(
       makeChild(trans, {
         amount: 0,
+        payee: prevSub?.payee ?? trans.payee,
         sort_order: num(prevSub && prevSub.sort_order) - 1,
       }),
     );
@@ -289,6 +299,31 @@ export function updateTransaction(
       return recalculateSplit({
         ...parent,
         ...(sub && { subtransactions: sub }),
+      });
+    } else if (
+      transaction.subtransactions &&
+      transaction.subtransactions.length > 0
+    ) {
+      // Converting a simple (non-split) transaction into a split — e.g.
+      // `api.updateTransaction(id, { subtransactions: [...] })`. Mark it as a
+      // parent and materialise each subtransaction as a proper child so it
+      // inherits the parent's account/date; otherwise the children are inserted
+      // without an `account` and the DB rejects them (#8207).
+      const parent = {
+        ...trans,
+        ...transaction,
+        is_parent: true,
+        is_child: false,
+        parent_id: undefined,
+      };
+      return recalculateSplit({
+        ...parent,
+        subtransactions: transaction.subtransactions.map((sub, index) =>
+          makeChild(parent, {
+            ...sub,
+            sort_order: sub.sort_order ?? -(index + 1),
+          }),
+        ),
       });
     } else {
       return transaction;
@@ -345,6 +380,7 @@ export function splitTransaction(
     return {
       ...rest,
       is_parent: true,
+      payee: null,
       error: num(trans.amount) === 0 ? null : SplitTransactionError(0, trans),
       subtransactions: subtransactions.map(t => ({
         ...t,

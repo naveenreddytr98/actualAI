@@ -7,6 +7,8 @@ import {
 import { getJWT } from '#app-enablebanking/utils/jwt';
 import { SecretName, secretsService } from '#services/secrets-service';
 
+const debugSensitive = createDebug('actual-sensitive:enable-banking');
+
 const debug = createDebug('actual:enable-banking:service');
 
 const BASE_URL = 'https://api.enablebanking.com';
@@ -17,8 +19,8 @@ export type EnableBankingTransaction = {
   entry_reference?: string;
   transaction_id?: string;
   transaction_amount: { currency: string; amount: string };
-  creditor?: { name?: string };
-  debtor?: { name?: string };
+  creditor?: { name?: string | null } | null;
+  debtor?: { name?: string | null } | null;
   credit_debit_indicator?: 'CRDT' | 'DBIT';
   status?: 'BOOK' | 'PDNG';
   booking_date?: string;
@@ -57,6 +59,8 @@ type EnableBankingAuthResponse = {
   url: string;
   authorization_id: string;
 };
+
+type PsuType = 'personal' | 'business';
 
 type BankSyncTransaction = EnableBankingTransaction & {
   transactionId: string;
@@ -126,7 +130,8 @@ async function request<T>(
   psuHeaders?: PsuHeaders,
 ): Promise<T> {
   const url = `${BASE_URL}${path}`;
-  debug('%s %s', method, url);
+  debug('%s request', method);
+  debugSensitive('%s %s', method, url);
 
   const headers: Record<string, string> = {
     Authorization: authHeaderOverride ?? getAuthorizationHeader(),
@@ -210,27 +215,21 @@ export function normalizeTransaction(
   const valueDate = tx.value_date;
 
   let payeeName = '';
-  if (tx.credit_debit_indicator === 'CRDT' && tx.debtor?.name) {
-    payeeName = tx.debtor.name;
-  } else if (tx.credit_debit_indicator === 'DBIT' && tx.creditor?.name) {
-    payeeName = tx.creditor.name;
-  } else if (tx.creditor?.name) {
-    payeeName = tx.creditor.name;
-  } else if (tx.debtor?.name) {
-    payeeName = tx.debtor.name;
-  } else if (
-    tx.remittance_information &&
-    tx.remittance_information.length > 0
-  ) {
-    const cleanedFallback = cleanRemittanceArray(tx.remittance_information);
-    if (cleanedFallback.length > 0) {
-      payeeName = cleanedFallback[0];
-    }
+  // With a known direction, the other party is the account holder.
+  if (tx.credit_debit_indicator === 'CRDT') {
+    payeeName = tx.debtor?.name || '';
+  } else if (tx.credit_debit_indicator === 'DBIT') {
+    payeeName = tx.creditor?.name || '';
+  } else {
+    payeeName = tx.creditor?.name || tx.debtor?.name || '';
   }
 
   const cleanedAll = tx.remittance_information
     ? cleanRemittanceArray(tx.remittance_information)
     : [];
+  if (!payeeName) {
+    payeeName = cleanedAll[0] || '';
+  }
   const remittanceInformationUnstructured =
     cleanedAll.length > 0 ? cleanedAll.join(' ') : undefined;
 
@@ -262,6 +261,26 @@ export function normalizeTransaction(
     remittanceInformationUnstructured,
     booked: tx.status !== 'PDNG',
   };
+}
+
+const IMPORTABLE_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+// Actual's client imports a transaction by inserting it into a local SQLite
+// database: the `date` column is a required integer derived from an ISO date,
+// and the amount must be numeric. A record with an empty / non-ISO date or a
+// non-numeric amount makes that insert throw, which aborts the whole account
+// sync. Enable Banking occasionally returns such records — e.g. a pending
+// transaction with no booking/value/transaction date — so callers skip them
+// instead of failing the entire import.
+export function isImportableTransaction(tx: BankSyncTransaction): boolean {
+  // Trim and reject empty amounts explicitly: Number('') is 0 (finite), so an
+  // empty/whitespace amount would otherwise slip through as a zero transaction.
+  const amount = tx.transactionAmount.amount.trim();
+  return (
+    IMPORTABLE_DATE_REGEX.test(tx.date) &&
+    amount !== '' &&
+    Number.isFinite(Number(amount))
+  );
 }
 
 export function normalizeBalance(bal: EnableBankingBalance): BankSyncBalance {
@@ -327,6 +346,8 @@ export const enableBankingService = {
     redirectUrl: string,
     state: string,
     maxConsentValidity?: number,
+    psuType: PsuType = 'personal',
+    psuHeaders?: PsuHeaders,
   ): Promise<EnableBankingAuthResponse> {
     const DEFAULT_CONSENT_DAYS = 90;
     const defaultMs = DEFAULT_CONSENT_DAYS * 24 * 60 * 60 * 1000;
@@ -340,14 +361,23 @@ export const enableBankingService = {
 
     const validUntil = new Date(Date.now() + consentMs);
 
-    return request<EnableBankingAuthResponse>('POST', '/auth', {
-      aspsp: { name: aspsp.name, country: aspsp.country },
-      redirect_url: redirectUrl,
-      state,
-      access: {
-        valid_until: validUntil.toISOString(),
+    return request<EnableBankingAuthResponse>(
+      'POST',
+      '/auth',
+      {
+        aspsp: { name: aspsp.name, country: aspsp.country },
+        redirect_url: redirectUrl,
+        state,
+        access: {
+          valid_until: validUntil.toISOString(),
+          balances: true,
+          transactions: true,
+        },
+        psu_type: psuType,
       },
-    });
+      undefined,
+      psuHeaders,
+    );
   },
 
   async createSession(code: string): Promise<EnableBankingSession> {
@@ -413,7 +443,6 @@ export const enableBankingService = {
         continuationKey,
         psuHeaders,
       );
-      allTransactions.push(...result.transactions);
 
       if (
         result.continuation_key &&
@@ -422,6 +451,7 @@ export const enableBankingService = {
         break;
       }
 
+      allTransactions.push(...result.transactions);
       continuationKey = result.continuation_key;
       iteration++;
     } while (continuationKey && iteration < maxIterations);

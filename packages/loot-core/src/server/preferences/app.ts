@@ -3,6 +3,7 @@ import * as fs from '#platform/server/fs';
 import { createApp } from '#server/app';
 import * as db from '#server/db';
 import { PostError } from '#server/errors';
+import { resetFormulaPreferencesCache } from '#server/formulas/bootstrap';
 import { getDefaultDocumentDir } from '#server/main';
 import { mutator } from '#server/mutators';
 import { post } from '#server/post';
@@ -27,6 +28,14 @@ export type PreferencesHandlers = {
 
 export const app = createApp<PreferencesHandlers>();
 
+const FORMULA_FORMAT_SYNCED_PREFS = new Set<keyof SyncedPrefs>([
+  'numberFormat',
+  'hideFraction',
+  'defaultCurrencyCode',
+  'currencySymbolPosition',
+  'currencySpaceBetweenAmountAndSymbol',
+]);
+
 app.method('preferences/save', mutator(undoable(saveSyncedPrefs)));
 app.method('preferences/get', getSyncedPrefs);
 app.method('save-global-prefs', saveGlobalPrefs);
@@ -50,6 +59,10 @@ async function saveSyncedPrefs({
     id,
     value,
   });
+
+  if (FORMULA_FORMAT_SYNCED_PREFS.has(id)) {
+    resetFormulaPreferencesCache();
+  }
 }
 
 async function getSyncedPrefs(): Promise<SyncedPrefs> {
@@ -85,6 +98,7 @@ async function saveGlobalPrefs(prefs: GlobalPrefs) {
   }
   if (prefs.language !== undefined) {
     await asyncStorage.setItem('language', prefs.language);
+    resetFormulaPreferencesCache();
   }
   if (prefs.theme !== undefined) {
     await asyncStorage.setItem('theme', prefs.theme);
@@ -128,6 +142,12 @@ async function saveGlobalPrefs(prefs: GlobalPrefs) {
   if (prefs.anthropicApiKey !== undefined) {
     await asyncStorage.setItem('anthropic-api-key', prefs.anthropicApiKey);
   }
+  if (prefs.lastSeenNewsDate !== undefined) {
+    await asyncStorage.setItem('lastSeenNewsDate', prefs.lastSeenNewsDate);
+  }
+  if (prefs.showNewsFeed !== undefined) {
+    await asyncStorage.setItem('showNewsFeed', prefs.showNewsFeed);
+  }
   return 'ok';
 }
 
@@ -147,6 +167,8 @@ async function loadGlobalPrefs(): Promise<GlobalPrefs> {
     'server-self-signed-cert': serverSelfSignedCert,
     syncServerConfig,
     notifyWhenUpdateIsAvailable,
+    lastSeenNewsDate,
+    showNewsFeed,
     'anthropic-api-key': anthropicApiKey,
   } = await asyncStorage.multiGet([
     'floating-sidebar',
@@ -163,6 +185,8 @@ async function loadGlobalPrefs(): Promise<GlobalPrefs> {
     'server-self-signed-cert',
     'syncServerConfig',
     'notifyWhenUpdateIsAvailable',
+    'lastSeenNewsDate',
+    'showNewsFeed',
     'anthropic-api-key',
   ] as const);
   return {
@@ -192,6 +216,8 @@ async function loadGlobalPrefs(): Promise<GlobalPrefs> {
       notifyWhenUpdateIsAvailable === undefined
         ? true
         : notifyWhenUpdateIsAvailable, // default to true
+    lastSeenNewsDate: lastSeenNewsDate || undefined,
+    showNewsFeed: showNewsFeed === undefined ? true : showNewsFeed, // default to true
     anthropicApiKey: anthropicApiKey || undefined,
   };
 }

@@ -1,4 +1,4 @@
-import React, { Fragment, useCallback, useMemo } from 'react';
+import React, { Fragment, useMemo } from 'react';
 import type {
   ComponentProps,
   ComponentPropsWithoutRef,
@@ -23,7 +23,6 @@ import type {
   CategoryGroupEntity,
 } from '@actual-app/core/types/models';
 import { css, cx } from '@emotion/css';
-import { Fzf } from 'fzf';
 
 import { useEnvelopeSheetValue } from '#components/budget/envelope/EnvelopeBudgetComponents';
 import { makeAmountFullStyle } from '#components/budget/util';
@@ -34,6 +33,7 @@ import { useSyncedPref } from '#hooks/useSyncedPref';
 import { envelopeBudget, trackingBudget } from '#spreadsheet/bindings';
 
 import { Autocomplete } from './Autocomplete';
+import { filterCategorySuggestions } from './filterCategorySuggestions';
 import { ItemHeader } from './ItemHeader';
 
 type CategoryAutocompleteItem = Omit<CategoryEntity, 'group'> & {
@@ -73,52 +73,17 @@ function CategoryList({
   showBalances,
 }: CategoryListProps) {
   const { t } = useTranslation();
-  const { splitTransaction, groupedCategories } = useMemo(() => {
-    return items.reduce(
-      (acc, item, index) => {
-        if (item.id === 'split') {
-          acc.splitTransaction = { ...item, highlightedIndex: index };
-          return acc;
-        }
-
-        const groupId = item.group?.id || '';
-        const existing = acc.groupedCategories.find(
-          x => x.group?.id === groupId,
-        );
-        const itemWithIndex = {
-          ...item,
-          highlightedIndex: index,
+  const splitTransactionIndex = items.findIndex(item => item.id === 'split');
+  const splitTransaction =
+    splitTransactionIndex === -1
+      ? null
+      : {
+          ...items[splitTransactionIndex],
+          highlightedIndex: splitTransactionIndex,
         };
-
-        if (!existing) {
-          acc.groupedCategories.push({
-            group: item.group ?? null,
-            categories: [itemWithIndex],
-          });
-        } else {
-          existing.categories.push(itemWithIndex);
-        }
-
-        return acc;
-      },
-      {
-        splitTransaction: null,
-        groupedCategories: [],
-      } as {
-        splitTransaction:
-          | (CategoryAutocompleteItem & {
-              highlightedIndex: number;
-            })
-          | null;
-        groupedCategories: Array<{
-          group: CategoryGroupEntity | null;
-          categories: Array<
-            CategoryAutocompleteItem & { highlightedIndex: number }
-          >;
-        }>;
-      },
-    );
-  }, [items]);
+  const categoryItems = items
+    .map((item, index) => ({ ...item, highlightedIndex: index }))
+    .filter(item => item.id !== 'split');
 
   return (
     <View>
@@ -145,37 +110,39 @@ function CategoryList({
               embedded,
             });
           })()}
-        {groupedCategories.map(({ group, categories }) => {
+        {categoryItems.map((item, index) => {
+          const group = item.group;
+
           if (!group) {
             return null;
           }
 
+          const previousGroup = categoryItems[index - 1]?.group;
+          const showGroupHeader = previousGroup?.id !== group.id;
+
           return (
-            <Fragment key={group.id}>
-              {renderCategoryItemGroupHeader({
-                title: `${group.name}${group.hidden ? ` ${t('(hidden)')}` : ''}`,
+            <Fragment key={item.id}>
+              {showGroupHeader &&
+                renderCategoryItemGroupHeader({
+                  title: `${group.name}${group.hidden ? ` ${t('(hidden)')}` : ''}`,
+                  style: {
+                    ...(showHiddenItems &&
+                      group.hidden && { color: theme.pageTextSubdued }),
+                  },
+                })}
+              {renderCategoryItem({
+                ...(getItemProps ? getItemProps({ item }) : {}),
+                item,
+                highlighted: highlightedIndex === item.highlightedIndex,
+                embedded,
                 style: {
                   ...(showHiddenItems &&
-                    group.hidden && { color: theme.pageTextSubdued }),
+                    (item.hidden || group.hidden) && {
+                      color: theme.pageTextSubdued,
+                    }),
                 },
+                showBalances,
               })}
-              {categories.map(item => (
-                <Fragment key={item.id}>
-                  {renderCategoryItem({
-                    ...(getItemProps ? getItemProps({ item }) : {}),
-                    item,
-                    highlighted: highlightedIndex === item.highlightedIndex,
-                    embedded,
-                    style: {
-                      ...(showHiddenItems &&
-                        (item.hidden || group.hidden) && {
-                          color: theme.pageTextSubdued,
-                        }),
-                    },
-                    showBalances,
-                  })}
-                </Fragment>
-              ))}
             </Fragment>
           );
         })}
@@ -249,31 +216,6 @@ export function CategoryAutocomplete({
     showHiddenCategories,
   ]);
 
-  const filterSuggestions = useCallback(
-    (
-      suggestions: CategoryAutocompleteItem[],
-      value: string,
-    ): CategoryAutocompleteItem[] => {
-      const splitItem = suggestions.find(s => s.id === 'split');
-      const realSuggestions = suggestions.filter(s => s.id !== 'split');
-
-      if (!value) {
-        return suggestions;
-      }
-
-      const filtered = new Fzf(realSuggestions, {
-        selector: item =>
-          item.group ? item.group.name + ' ' + item.name : item.name,
-        limit: 100,
-      })
-        .find(value)
-        .map(result => result.item);
-
-      return splitItem ? [splitItem, ...filtered] : filtered;
-    },
-    [],
-  );
-
   return (
     <Autocomplete
       strict
@@ -289,7 +231,7 @@ export function CategoryAutocomplete({
         }
         return 0;
       }}
-      filterSuggestions={filterSuggestions}
+      filterSuggestions={filterCategorySuggestions}
       suggestions={categorySuggestions}
       renderItems={(items, getItemProps, highlightedIndex) => (
         <CategoryList

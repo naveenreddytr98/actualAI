@@ -22,18 +22,24 @@ import {
 } from '#server/transactions/transaction-rules';
 import { undoable } from '#server/undo';
 import { RSchedule } from '#server/util/rschedule';
-import { currentDay, dayFromDate, parseDate } from '#shared/months';
+import { currentDay, dayFromDate, parseDate, subDays } from '#shared/months';
 import { q } from '#shared/query';
 import {
+  DEFAULT_UPCOMING_SCHEDULE_DAYS,
   extractScheduleConds,
   getDateWithSkippedWeekend,
   getHasTransactionsQuery,
   getNextDate,
+  getNextDateAfter,
   getScheduledAmount,
   getStatus,
   recurConfigToRSchedule,
 } from '#shared/schedules';
-import type { RuleConditionEntity, ScheduleEntity } from '#types/models';
+import type {
+  RuleActionEntity,
+  RuleConditionEntity,
+  ScheduleEntity,
+} from '#types/models';
 
 import { findSchedules } from './find-schedules';
 
@@ -119,6 +125,53 @@ export function updateConditions(conditions, newConditions) {
   return updated.concat(added);
 }
 
+// Keep a rule's actions in sync with its (edited) schedule conditions.
+//
+// A schedule's amount lives in the rule's amount *condition*, but a rule can
+// also carry a plain `set amount` *action* (e.g. when customized via "Edit as
+// rule"). Posting a scheduled transaction runs the rule, so a stale action
+// would revert the posted amount to the old value, ignoring the edited
+// amount. Keep such actions in sync with the amount condition.
+//
+// Only plain `set amount` actions are rewritten:
+//   - Templated/formula actions (`options.template`/`options.formula`) compute
+//     their own value, so they're left untouched.
+//   - `set-split-amount` actions have a different `op` and so are excluded by
+//     the `action.op === 'set'` check below.
+//
+// Returns `null` when nothing changed, so callers can avoid a redundant write.
+function updateActions(
+  conditions: RuleConditionEntity[],
+  actions: RuleActionEntity[],
+): RuleActionEntity[] | null {
+  const { amount: amountCond } = extractScheduleConds(conditions);
+  if (amountCond === null) {
+    return null;
+  }
+
+  // Mirrors how `_amount` resolves: a deleted/empty amount condition value
+  // yields 0, so the action is synced to 0 too, keeping it consistent with
+  // the amount the schedule actually posts.
+  const amount = getScheduledAmount(amountCond.value);
+
+  let changed = false;
+  const updated = actions.map(action => {
+    if (
+      action.op === 'set' &&
+      action.field === 'amount' &&
+      !action.options?.template &&
+      !action.options?.formula &&
+      action.value !== amount
+    ) {
+      changed = true;
+      return { ...action, value: amount };
+    }
+    return action;
+  });
+
+  return changed ? updated : null;
+}
+
 export async function getRuleForSchedule(id: string | null): Promise<Rule> {
   if (id == null) {
     throw new Error('Schedule not attached to a rule');
@@ -156,18 +209,30 @@ async function fixRuleForSchedule(id) {
   return getRules().find(rule => rule.id === newId);
 }
 
+// `getNextDate` only looks at occurrences from `today` on, before moving them
+// off the weekend, so it misses an earlier occurrence moved `after` the
+// weekend onto `today` or later. `getNextDateAfter` sees that one, and it is
+// only used when it comes first, so every other case keeps its next date.
+function getNextDateFrom(dateCond, today: Date) {
+  const nextDate = getNextDate(dateCond, today);
+  const movedOntoToday = getNextDateAfter(dateCond, subDays(today, 1));
+
+  return movedOntoToday != null &&
+    (nextDate == null || movedOntoToday < nextDate)
+    ? movedOntoToday
+    : nextDate;
+}
+
 export async function setNextDate({
   id,
-  start,
   conditions,
   reset,
-  skipRequested,
+  advance,
 }: {
   id: string;
-  start?;
   conditions?;
   reset?: boolean;
-  skipRequested?: boolean;
+  advance?: boolean;
 }) {
   if (conditions == null) {
     const rule = await getRuleForSchedule(id);
@@ -179,32 +244,15 @@ export async function setNextDate({
 
   const { date: dateCond } = extractScheduleConds(conditions);
 
-  let { data: nextDate } = await aqlQuery(
+  const { data: nextDate } = await aqlQuery(
     q('schedules').filter({ id }).calculate('next_date'),
   );
 
-  if (skipRequested === true) {
-    const skipWeekend: boolean = dateCond.value?.skipWeekend;
-    const weekendSolveMode: string = dateCond.value?.weekendSolveMode;
-
-    if (weekendSolveMode === 'before' && skipWeekend === true) {
-      const parsedNextDate = parseDate(nextDate);
-      if (d.isFriday(parsedNextDate) || d.isWeekend(parsedNextDate)) {
-        // nextDate is on weekend or friday, moving to monday
-        // so getNextDate and getDateWithSkippedWeekend
-        // don't push the date back to Friday, thus causing
-        // `(newNextDate !== nextDate) ` to be false and not updating the next date
-        nextDate = dayFromDate(d.nextMonday(parsedNextDate));
-      }
-    }
-  }
-
   // Only do this if a date condition exists
   if (dateCond) {
-    const newNextDate = getNextDate(
-      dateCond,
-      start ? start(nextDate) : new Date(),
-    );
+    const newNextDate = advance
+      ? getNextDateAfter(dateCond, nextDate)
+      : getNextDateFrom(dateCond, new Date());
 
     if (newNextDate != null && newNextDate !== nextDate) {
       // Our `update` functon requires the id of the item and we don't
@@ -256,9 +304,40 @@ function normalizeScheduleName(name) {
   return trimmedName || null;
 }
 
+async function moveSchedule({
+  id,
+  targetId,
+}: {
+  id: string;
+  targetId: string | null;
+}) {
+  await db.moveSchedule(id, targetId);
+  return {};
+}
+
+// The auto-posting service is throttled to one run per day through the
+// `lastScheduleRun` pref (see the `sync` event listener at the bottom of this
+// file). A schedule that posts transactions can be created or edited after
+// that run has already happened and still be due today, in which case it
+// would not be posted until the next day. Clearing the marker lets the
+// service run again for the current day; it only posts occurrences that do
+// not have a transaction yet, so an extra run is harmless.
+async function allowAutoPostingToRunAgainToday(postsTransaction: boolean) {
+  if (!postsTransaction) {
+    return;
+  }
+
+  if (prefs.getPrefs()?.lastScheduleRun) {
+    await prefs.savePrefs({ lastScheduleRun: undefined });
+  }
+}
+
 export async function createSchedule({
   schedule = null,
   conditions = [],
+}: {
+  schedule?: Partial<ScheduleEntity> | null;
+  conditions?: RuleConditionEntity[];
 } = {}): Promise<ScheduleEntity['id']> {
   const scheduleId = schedule?.id || uuidv4();
 
@@ -270,7 +349,7 @@ export async function createSchedule({
     throw new Error('Date is required');
   }
 
-  const nextDate = getNextDate(dateCond);
+  const nextDate = getNextDateFrom(dateCond, parseDate(currentDay()));
   const nextDateRepr = nextDate ? toDateRepr(nextDate) : null;
   const scheduleFields = schedule && {
     ...schedule,
@@ -306,6 +385,8 @@ export async function createSchedule({
     id: scheduleId,
     rule: ruleId,
   });
+
+  await allowAutoPostingToRunAgainToday(scheduleFields?.posts_transaction);
 
   return scheduleId;
 }
@@ -362,7 +443,13 @@ export async function updateSchedule({
       const oldConditions = rule.serialize().conditions;
       const newConditions = updateConditions(oldConditions, conditions);
 
-      await updateRule({ id: rule.id, conditions: newConditions });
+      const newActions = updateActions(newConditions, rule.serialize().actions);
+
+      await updateRule({
+        id: rule.id,
+        conditions: newConditions,
+        ...(newActions ? { actions: newActions } : {}),
+      });
 
       // Annoyingly, sometimes it has `type` and sometimes it doesn't
       const stripType = ({ type: _type, ...fields }) => fields;
@@ -395,6 +482,12 @@ export async function updateSchedule({
     await db.updateWithSchema('schedules', scheduleFields);
   });
 
+  const postsTransaction =
+    scheduleFields.posts_transaction ??
+    (await getSchedule(scheduleFields.id))?.posts_transaction;
+
+  await allowAutoPostingToRunAgainToday(postsTransaction);
+
   return scheduleFields.id;
 }
 
@@ -410,13 +503,7 @@ export async function deleteSchedule({ id }) {
 }
 
 export async function skipNextDate({ id }) {
-  return setNextDate({
-    id,
-    start: nextDate => {
-      return d.addDays(parseDate(nextDate), 1);
-    },
-    skipRequested: true,
-  });
+  return setNextDate({ id, advance: true });
 }
 
 function discoverSchedules() {
@@ -526,9 +613,71 @@ async function postTransactionForSchedule({
   }
 }
 
+async function getSchedule(id: string): Promise<ScheduleEntity | null> {
+  const {
+    data: [schedule],
+  } = await aqlQuery(q('schedules').filter({ id }).select('*'));
+
+  return schedule ?? null;
+}
+
+export async function getCompletedScheduleRuleIds(): Promise<string[]> {
+  const { data } = await aqlQuery(
+    q('schedules').filter({ completed: true }).select(['rule']),
+  );
+
+  return data
+    .map(schedule => schedule.rule)
+    .filter((rule): rule is string => !!rule);
+}
+
+async function hasTransactionForSchedule(
+  schedule: ScheduleEntity,
+): Promise<boolean> {
+  const { data } = await aqlQuery(getHasTransactionsQuery([schedule]));
+
+  return data.filter(Boolean).some(row => row.schedule === schedule.id);
+}
+
+function isRecurringSchedule(schedule: ScheduleEntity): boolean {
+  return (
+    schedule._date != null &&
+    typeof schedule._date === 'object' &&
+    'frequency' in schedule._date
+  );
+}
+
+async function advanceRecurringScheduleFromNextDate(
+  schedule: ScheduleEntity,
+): Promise<ScheduleEntity | null> {
+  if (!isRecurringSchedule(schedule)) {
+    return null;
+  }
+
+  const previousNextDate = schedule.next_date;
+
+  try {
+    await setNextDate({ id: schedule.id, advance: true });
+  } catch {
+    // This might error if the rule is corrupted and it can't find the rule.
+    return null;
+  }
+
+  const updatedSchedule = await getSchedule(schedule.id);
+
+  if (
+    updatedSchedule == null ||
+    updatedSchedule.next_date === previousNextDate
+  ) {
+    return null;
+  }
+
+  return updatedSchedule;
+}
+
 // TODO: make this sequential
 
-async function advanceSchedulesService(syncSuccess) {
+export async function advanceSchedulesService(syncSuccess) {
   // Move all paid schedules
   const { data: schedules } = await aqlQuery(
     q('schedules')
@@ -557,13 +706,91 @@ async function advanceSchedulesService(syncSuccess) {
       schedule.next_date,
       schedule.completed,
       hasTrans.has(schedule.id),
-      schedule.custom_upcoming_length ?? upcomingLength[0]?.value ?? '7',
+      schedule.custom_upcoming_length ??
+        upcomingLength[0]?.value ??
+        DEFAULT_UPCOMING_SCHEDULE_DAYS,
     );
 
-    if (status === 'paid') {
+    if (
+      schedule.posts_transaction &&
+      schedule._account &&
+      (status !== 'paid' || isRecurringSchedule(schedule)) &&
+      (status === 'paid' || status === 'due' || status === 'missed')
+    ) {
+      let currentSchedule = schedule;
+      let currentStatus = status;
+
+      while (
+        currentSchedule.posts_transaction &&
+        currentSchedule._account &&
+        (currentStatus === 'paid' ||
+          currentStatus === 'due' ||
+          currentStatus === 'missed')
+      ) {
+        if (currentStatus === 'paid') {
+          if (currentSchedule.next_date === currentDay()) {
+            break;
+          }
+
+          const updatedSchedule =
+            await advanceRecurringScheduleFromNextDate(currentSchedule);
+
+          if (updatedSchedule == null) {
+            break;
+          }
+
+          currentSchedule = updatedSchedule;
+          currentStatus = getStatus(
+            currentSchedule.next_date,
+            currentSchedule.completed,
+            await hasTransactionForSchedule(currentSchedule),
+            currentSchedule.custom_upcoming_length ??
+              upcomingLength[0]?.value ??
+              DEFAULT_UPCOMING_SCHEDULE_DAYS,
+          );
+          continue;
+        }
+
+        // Automatically create a transaction for due schedules.
+        if (syncSuccess) {
+          await postTransactionForSchedule({ id: currentSchedule.id });
+
+          didPost = true;
+        } else {
+          failedToPost.push(currentSchedule._payee);
+          break;
+        }
+
+        // do not skip schedules due today
+        if (currentStatus === 'due') {
+          break;
+        }
+
+        if (!isRecurringSchedule(currentSchedule)) {
+          break;
+        }
+
+        const updatedSchedule =
+          await advanceRecurringScheduleFromNextDate(currentSchedule);
+
+        if (updatedSchedule == null) {
+          break;
+        }
+
+        currentSchedule = updatedSchedule;
+        currentStatus = getStatus(
+          currentSchedule.next_date,
+          currentSchedule.completed,
+          await hasTransactionForSchedule(currentSchedule),
+          currentSchedule.custom_upcoming_length ??
+            upcomingLength[0]?.value ??
+            DEFAULT_UPCOMING_SCHEDULE_DAYS,
+        );
+      }
+    } else if (status === 'paid') {
       if (schedule._date) {
         // Move forward recurring schedules
-        if (schedule._date.frequency) {
+        if (isRecurringSchedule(schedule)) {
           try {
             await setNextDate({ id: schedule.id });
           } catch {
@@ -578,19 +805,6 @@ async function advanceSchedulesService(syncSuccess) {
             });
           }
         }
-      }
-    } else if (
-      (status === 'due' || status === 'missed') &&
-      schedule.posts_transaction &&
-      schedule._account
-    ) {
-      // Automatically create a transaction for due schedules
-      if (syncSuccess) {
-        await postTransactionForSchedule({ id: schedule.id });
-
-        didPost = true;
-      } else {
-        failedToPost.push(schedule._payee);
       }
     }
   }
@@ -614,6 +828,7 @@ export type SchedulesHandlers = {
   'schedule/create': typeof createSchedule;
   'schedule/update': typeof updateSchedule;
   'schedule/delete': typeof deleteSchedule;
+  'schedule/move': typeof moveSchedule;
   'schedule/skip-next-date': typeof skipNextDate;
   'schedule/post-transaction': typeof postTransactionForSchedule;
   'schedule/force-run-service': typeof advanceSchedulesService;
@@ -627,6 +842,7 @@ export const app = createApp<SchedulesHandlers>();
 app.method('schedule/create', mutator(undoable(createSchedule)));
 app.method('schedule/update', mutator(undoable(updateSchedule)));
 app.method('schedule/delete', mutator(undoable(deleteSchedule)));
+app.method('schedule/move', mutator(undoable(moveSchedule)));
 app.method('schedule/skip-next-date', mutator(undoable(skipNextDate)));
 app.method(
   'schedule/post-transaction',

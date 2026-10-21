@@ -1,6 +1,6 @@
-import path from 'path';
-
+import createDebug from 'debug';
 import express from 'express';
+import type { Request, Response } from 'express';
 
 import { sha256String } from '#util/hash';
 import {
@@ -10,6 +10,7 @@ import {
 
 import {
   AccountNotLinkedToRequisition,
+  EndUserAgreementExpiredError,
   GenericGoCardlessError,
   GoCardlessClientError,
   RateLimitError,
@@ -27,6 +28,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+const debugSensitive = createDebug('actual-sensitive:gocardless');
+
+const ELECTRON_APP_ORIGIN = 'app://actual';
+
 function validateOrigin(origin: string | undefined) {
   let url;
   try {
@@ -40,6 +45,15 @@ function validateOrigin(origin: string | undefined) {
   return url.origin;
 }
 
+function resolveRedirectHost(req: Request) {
+  const { origin } = req.headers;
+  const host = req.get('host');
+  if (origin === ELECTRON_APP_ORIGIN && host) {
+    return `${req.protocol}://${host}`;
+  }
+  return validateOrigin(origin);
+}
+
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 function sanitizeId<T extends string = string>(id: unknown): T {
   if (typeof id !== 'string' || !SAFE_ID.test(id)) {
@@ -48,11 +62,30 @@ function sanitizeId<T extends string = string>(id: unknown): T {
   return id as T;
 }
 
+const LINK_PAGE_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Actual</title>
+  </head>
+  <body>
+    <script>
+      window.close();
+    </script>
+
+    <p>Please wait...</p>
+    <p>
+      The window should close automatically. If nothing happened you can close
+      this window or tab.
+    </p>
+  </body>
+</html>`;
+
 const app = express();
 app.use(requestLoggerMiddleware);
 
 app.get('/link', function (req, res) {
-  res.sendFile('link.html', { root: path.resolve('./src/app-gocardless') });
+  res.send(LINK_PAGE_HTML);
 });
 
 export { app as handlers };
@@ -68,12 +101,31 @@ app.post('/status', async (req, res) => {
   });
 });
 
+const ensureConfigured = (
+  _req: Request,
+  res: Response,
+  next: express.NextFunction,
+) => {
+  if (!goCardlessService.isConfigured()) {
+    res.send({
+      status: 'ok',
+      data: {
+        error_type: 'GOCARDLESS_NOT_CONFIGURED',
+        error_code: 'GOCARDLESS_NOT_CONFIGURED',
+        reason: 'GoCardless credentials are missing',
+      },
+    });
+    return;
+  }
+  next();
+};
+
 app.post(
   '/create-web-token',
   handleError(async (req, res) => {
     const { institutionId: rawInstitutionId } = req.body || {};
     const institutionId = sanitizeId<GoCardlessInstitutionId>(rawInstitutionId);
-    const host = validateOrigin(req.headers.origin);
+    const host = resolveRedirectHost(req);
 
     const { link, requisitionId } = await goCardlessService.createRequisition({
       institutionId,
@@ -180,6 +232,7 @@ app.post(
 
 app.post(
   '/transactions',
+  ensureConfigured,
   handleError(async (req, res) => {
     const {
       requisitionId: rawRequisitionId,
@@ -274,6 +327,7 @@ app.post(
 
       switch (true) {
         case error instanceof RequisitionNotLinked:
+        case error instanceof EndUserAgreementExpiredError:
           sendErrorResponse({
             error_type: 'ITEM_ERROR',
             error_code: 'ITEM_LOGIN_REQUIRED',
@@ -299,14 +353,16 @@ app.post(
           });
           break;
         case error instanceof GenericGoCardlessError:
-          console.log('Something went wrong', errorMessage);
+          console.log('GoCardless synchronization failed');
+          debugSensitive('GoCardless synchronization failed: %s', errorMessage);
           sendErrorResponse({
             error_type: 'SYNC_ERROR',
             error_code: 'NORDIGEN_ERROR',
           });
           break;
         default:
-          console.log('Something went wrong', errorMessage);
+          console.log('GoCardless synchronization failed');
+          debugSensitive('GoCardless synchronization failed: %s', errorMessage);
           sendErrorResponse({
             error_type: 'UNKNOWN',
             error_code: 'UNKNOWN',

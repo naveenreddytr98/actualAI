@@ -8,12 +8,14 @@ import {
   useDragAndDrop,
 } from 'react-aria-components';
 import { Trans, useTranslation } from 'react-i18next';
+import { Navigate, useLocation } from 'react-router';
 
 import { Button } from '@actual-app/components/button';
 import {
   SvgAdd,
   SvgCheveronDown,
   SvgCheveronRight,
+  SvgPiggyBank,
 } from '@actual-app/components/icons/v1';
 import { styles } from '@actual-app/components/styles';
 import { Text } from '@actual-app/components/text';
@@ -24,13 +26,13 @@ import type { AccountEntity } from '@actual-app/core/types/models';
 import { css } from '@emotion/css';
 
 import { useMoveAccountMutation, useSyncAndDownloadMutation } from '#accounts';
+import { isAccountFailedSync } from '#accounts/syncStatus';
 import { makeAmountFullStyle } from '#components/budget/util';
 import { MOBILE_NAV_HEIGHT } from '#components/mobile/MobileNavTabs';
 import { PullToRefresh } from '#components/mobile/PullToRefresh';
 import { MobilePageHeader, Page } from '#components/Page';
 import { CellValue, CellValueText } from '#components/spreadsheet/CellValue';
 import { useAccounts } from '#hooks/useAccounts';
-import { useFailedAccounts } from '#hooks/useFailedAccounts';
 import { useLocalPref } from '#hooks/useLocalPref';
 import { useNavigate } from '#hooks/useNavigate';
 import { useSyncedPref } from '#hooks/useSyncedPref';
@@ -40,6 +42,9 @@ import type { Binding, SheetFields } from '#spreadsheet';
 import * as bindings from '#spreadsheet/bindings';
 
 const ROW_HEIGHT = 60;
+
+// Virtual account id for the all-accounts transaction list (/accounts/all)
+export const ALL_ACCOUNTS_ID = 'all';
 
 type AccountHeaderProps<SheetFieldName extends SheetFields<'account'>> = {
   id: string;
@@ -86,13 +91,7 @@ function AccountHeader<SheetFieldName extends SheetFields<'account'>>({
       ])}
     >
       <View style={{ flex: 1, alignItems: 'center', flexDirection: 'row' }}>
-        <Text
-          style={{
-            ...styles.text,
-            fontSize: 17,
-          }}
-          data-testid="name"
-        >
+        <Text size="extra-large" data-testid="name">
           {name}
         </Text>
         <Cheveron
@@ -226,16 +225,57 @@ function AccountListItem({
   );
 }
 
-function EmptyMessage() {
+function EmptyMessage({ onAddAccount }: { onAddAccount: () => void }) {
   return (
-    <View style={{ flex: 1, padding: 30 }}>
-      <Text style={styles.text}>
+    <View
+      style={{
+        minHeight: `calc(100vh - ${MOBILE_NAV_HEIGHT}px - 140px)`,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 30,
+        gap: 15,
+      }}
+    >
+      <SvgPiggyBank
+        width={70}
+        height={70}
+        style={{ color: theme.pageTextSubdued }}
+      />
+      <Text
+        style={{
+          ...styles.largeText,
+          fontWeight: 600,
+          textAlign: 'center',
+        }}
+      >
+        <Trans>Add your first account</Trans>
+      </Text>
+      <Text
+        style={{
+          ...styles.text,
+          textAlign: 'center',
+          color: theme.pageTextLight,
+          lineHeight: 1.5,
+          maxWidth: 340,
+        }}
+      >
         <Trans>
-          For Actual to be useful, you need to <strong>add an account</strong>.
-          You can link an account to automatically download transactions, or
-          manage it locally yourself.
+          Accounts hold your transactions, like everyday spending, savings,
+          credit cards, or cash. Add one to start tracking your money.
         </Trans>
       </Text>
+      <Button
+        variant="primary"
+        style={{
+          padding: '12px 20px',
+          fontSize: 15,
+          minHeight: styles.mobileMinHeight,
+          marginTop: 10,
+        }}
+        onPress={onAddAccount}
+      >
+        <Trans>Add account</Trans>
+      </Button>
     </View>
   );
 }
@@ -312,66 +352,69 @@ function AllAccountList({
       }
       padding={0}
     >
-      {accounts.length === 0 && <EmptyMessage />}
-      <PullToRefresh onRefresh={onSync}>
-        <View
-          aria-label={t('Account list')}
-          style={{ paddingBottom: MOBILE_NAV_HEIGHT }}
-        >
-          <AccountHeader
-            id="all"
-            name={t('All accounts')}
-            amount={getAllAccountsBalance()}
-          />
-          {onBudgetAccounts.length > 0 && (
+      {accounts.length === 0 ? (
+        <EmptyMessage onAddAccount={onAddAccount} />
+      ) : (
+        <PullToRefresh onRefresh={onSync}>
+          <View
+            aria-label={t('Account list')}
+            style={{ paddingBottom: MOBILE_NAV_HEIGHT }}
+          >
             <AccountHeader
-              id="onbudget"
-              name={t('On budget')}
-              amount={getOnBudgetBalance()}
+              id={ALL_ACCOUNTS_ID}
+              name={t('All accounts')}
+              amount={getAllAccountsBalance()}
             />
-          )}
-          <AccountList
-            aria-label={t('On budget accounts')}
-            accounts={onBudgetAccounts}
-            getAccountBalance={getAccountBalance}
-            onOpenAccount={onOpenAccount}
-          />
-          {offBudgetAccounts.length > 0 && (
-            <AccountHeader
-              id="offbudget"
-              name={t('Off budget')}
-              amount={getOffBudgetBalance()}
-            />
-          )}
-          <AccountList
-            aria-label={t('Off budget accounts')}
-            accounts={offBudgetAccounts}
-            getAccountBalance={getAccountBalance}
-            onOpenAccount={onOpenAccount}
-          />
-          {closedAccounts.length > 0 && (
-            <AccountHeader
-              id="closed"
-              name={t('Closed')}
-              onPress={onToggleClosedAccounts}
-              amount={getClosedAccountsBalance()}
-              style={{ marginTop: 30 }}
-              showCheveronDown={showClosedAccounts}
-            />
-          )}
-          {showClosedAccounts && (
+            {onBudgetAccounts.length > 0 && (
+              <AccountHeader
+                id="onbudget"
+                name={t('On budget')}
+                amount={getOnBudgetBalance()}
+              />
+            )}
             <AccountList
-              aria-label={t('Closed accounts')}
-              accounts={closedAccounts}
+              aria-label={t('On budget accounts')}
+              accounts={onBudgetAccounts}
               getAccountBalance={getAccountBalance}
               onOpenAccount={onOpenAccount}
-              ref={el => {
-                if (el) closedAccountsRef.current = el;
-              }}
             />
-          )}
-        </View>
-      </PullToRefresh>
+            {offBudgetAccounts.length > 0 && (
+              <AccountHeader
+                id="offbudget"
+                name={t('Off budget')}
+                amount={getOffBudgetBalance()}
+              />
+            )}
+            <AccountList
+              aria-label={t('Off budget accounts')}
+              accounts={offBudgetAccounts}
+              getAccountBalance={getAccountBalance}
+              onOpenAccount={onOpenAccount}
+            />
+            {closedAccounts.length > 0 && (
+              <AccountHeader
+                id="closed"
+                name={t('Closed')}
+                onPress={onToggleClosedAccounts}
+                amount={getClosedAccountsBalance()}
+                style={{ marginTop: 30 }}
+                showCheveronDown={showClosedAccounts}
+              />
+            )}
+            {showClosedAccounts && (
+              <AccountList
+                aria-label={t('Closed accounts')}
+                accounts={closedAccounts}
+                getAccountBalance={getAccountBalance}
+                onOpenAccount={onOpenAccount}
+                ref={el => {
+                  if (el) closedAccountsRef.current = el;
+                }}
+              />
+            )}
+          </View>
+        </PullToRefresh>
+      )}
     </Page>
   );
 }
@@ -395,7 +438,6 @@ const AccountList = forwardRef<HTMLDivElement, AccountListProps>(
     }: AccountListProps,
     ref,
   ) => {
-    const failedAccounts = useFailedAccounts();
     const syncingAccountIds = useSelector(
       state => state.account.accountsSyncing,
     );
@@ -464,7 +506,7 @@ const AccountList = forwardRef<HTMLDivElement, AccountListProps>(
       <ListBox
         aria-label={ariaLabel}
         items={accounts}
-        dependencies={[syncingAccountIds, failedAccounts, updatedAccounts]}
+        dependencies={[syncingAccountIds, updatedAccounts]}
         dragAndDropHooks={dragAndDropHooks}
         ref={ref}
         style={{
@@ -484,7 +526,7 @@ const AccountList = forwardRef<HTMLDivElement, AccountListProps>(
             isUpdated={updatedAccounts && updatedAccounts.includes(account.id)}
             isConnected={!!account.bank}
             isPending={syncingAccountIds.includes(account.id)}
-            isFailed={failedAccounts && failedAccounts.has(account.id)}
+            isFailed={isAccountFailedSync(account)}
             getBalanceQuery={getBalanceBinding}
             onSelect={onOpenAccount}
           />
@@ -497,6 +539,7 @@ const AccountList = forwardRef<HTMLDivElement, AccountListProps>(
 AccountList.displayName = 'AccountList';
 
 export function AccountsPage() {
+  const location = useLocation();
   const dispatch = useDispatch();
   const { data: accounts = [] } = useAccounts();
   const [_numberFormat] = useSyncedPref('numberFormat');
@@ -520,6 +563,19 @@ export function AccountsPage() {
   const onSync = useCallback(async () => {
     syncAndDownload.mutate({});
   }, [syncAndDownload]);
+
+  // Drill-downs (e.g. report activity) land on /accounts with filter
+  // conditions in the location state; show them as filtered transactions.
+  const filterConditions = location?.state?.filterConditions || [];
+  if (filterConditions.length > 0) {
+    return (
+      <Navigate
+        to={`/accounts/${ALL_ACCOUNTS_ID}`}
+        state={location.state}
+        replace
+      />
+    );
+  }
 
   return (
     <View style={{ flex: 1 }}>

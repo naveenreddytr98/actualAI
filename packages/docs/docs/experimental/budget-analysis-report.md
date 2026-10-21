@@ -1,15 +1,13 @@
 # Budget Analysis Report
 
-:::warning
-This is an **experimental feature**. That means we’re still working on finishing it. There may be bugs, missing functionality or incomplete documentation, and we may decide to remove the feature in a future release. If you have any feedback, please comment on the [dedicated issue](https://github.com/actualbudget/actual/issues/6742) or post a message in the Discord.
-:::
+<ExperimentalFeatureWarning issueId="6742" />
 
 ## What it is
 
 The Budget Analysis is a financial planning tool, that tracks the balance of your budget over time.
 It tracks four separate series: **Budgeted**, **Spent**, **Overspending Adjustment**, and the cumulative **Balance**.
 
-![Example image of Budget Analysis Report](/img/experimental/budget-analysis/budget-analysis-image.webp)
+![The Budget Analysis report for the Usual Expenses categories over six months, with budgeted, spent and overspending bars and the balance line](/img/experimental/budget-analysis/budget-analysis-report-overview@2x.webp)
 
 ## Important information
 
@@ -35,5 +33,5 @@ It tracks four separate series: **Budgeted**, **Spent**, **Overspending Adjustme
 
 ## Related
 
-- [Budget page](/docs/tour/budget.md) — configure budgets and rollover settings.
-- [Reports index](/docs/reports/index.md) — other report types and tips.
+- [Budget page](../tour/budget.md) — configure budgets and rollover settings.
+- [Reports index](../reports/index.md) — other report types and tips.

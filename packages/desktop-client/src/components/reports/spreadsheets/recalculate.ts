@@ -16,7 +16,12 @@ type recalculateProps = {
   intervals: Array<string>;
   assets: QueryDataEntity[];
   debts: QueryDataEntity[];
-  groupByLabel: 'category' | 'categoryGroup' | 'payee' | 'account';
+  groupByLabel:
+    | 'category'
+    | 'categoryGroup'
+    | 'payee'
+    | 'account'
+    | 'tagBucketId';
   showOffBudget?: boolean;
   showHiddenCategories?: boolean;
   showUncategorized?: boolean;
@@ -83,6 +88,7 @@ export function recalculate({
       const change = last ? intervalTotals - last.totalTotals : 0;
 
       arr.push({
+        date: intervalItem,
         totalAssets: intervalAssets,
         totalDebts: intervalDebts,
         netAssets: intervalTotals > 0 ? intervalTotals : 0,
@@ -107,6 +113,8 @@ export function recalculate({
   return {
     id: item.id || '',
     name: item.name,
+    uncategorizedId: item.uncategorized_id,
+    bucketTagNames: item.bucketTagNames,
     totalAssets,
     totalDebts,
     netAssets: totalTotals > 0 ? totalTotals : 0,

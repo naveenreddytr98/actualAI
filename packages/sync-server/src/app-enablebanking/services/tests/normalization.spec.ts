@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isImportableTransaction,
   normalizeAccount,
   normalizeBalance,
   normalizeTransaction,
@@ -12,6 +13,7 @@ import {
   mockDebitTransaction,
   mockNegativeBalance,
   mockPendingTransaction,
+  mockPendingTransactionNoDate,
   mockSessionAccount,
   mockSessionAccountMinimal,
   mockSessionAccountNoName,
@@ -40,6 +42,101 @@ describe('normalizeTransaction', () => {
     expect(result.transactionId).toBe('ref-002');
     expect(result.transactionAmount.amount).toBe('-25.99');
   });
+
+  // GH #9165: a missing counterparty must not select the account holder.
+  it('should not use the account holder as payee for DBIT when creditor is missing', () => {
+    const result = normalizeTransaction({
+      ...mockDebitTransaction,
+      creditor: null,
+      debtor: { name: 'Account Holder' },
+      transaction_amount: { currency: 'EUR', amount: '-21.58' },
+      booking_date: '2026-10-02',
+      remittance_information: ['Card purchase at Example Merchant'],
+    });
+
+    expect(result).toMatchObject({
+      transactionAmount: { amount: '-21.58', currency: 'EUR' },
+      bookingDate: '2026-10-02',
+      notes: 'Card purchase at Example Merchant',
+    });
+    expect(result.payeeName).toBe('Card purchase at Example Merchant');
+  });
+
+  it('should not use the account holder as payee for CRDT when debtor is missing', () => {
+    const result = normalizeTransaction({
+      ...mockCreditTransaction,
+      debtor: undefined,
+      creditor: { name: 'Account Holder' },
+    });
+
+    expect(result.payeeName).toBe('Monthly salary');
+  });
+
+  it.each(['DBIT', 'CRDT'] as const)(
+    'should use cleaned remittance for %s with an empty counterparty name',
+    credit_debit_indicator => {
+      const result = normalizeTransaction({
+        ...mockDebitTransaction,
+        credit_debit_indicator,
+        creditor: {
+          name: credit_debit_indicator === 'DBIT' ? '' : 'Account Holder',
+        },
+        debtor: {
+          name: credit_debit_indicator === 'CRDT' ? null : 'Account Holder',
+        },
+        remittance_information: [
+          'EREF+',
+          'SVWZ+Merchant description',
+          'Extra notes',
+        ],
+      });
+
+      expect(result.payeeName).toBe('Merchant description');
+      expect(result.notes).toBe('Merchant description Extra notes');
+    },
+  );
+
+  it.each(['DBIT', 'CRDT'] as const)(
+    'should leave payee empty for %s when counterparty and usable remittance are absent',
+    credit_debit_indicator => {
+      const result = normalizeTransaction({
+        ...mockDebitTransaction,
+        credit_debit_indicator,
+        creditor:
+          credit_debit_indicator === 'DBIT'
+            ? undefined
+            : { name: 'Account Holder' },
+        debtor:
+          credit_debit_indicator === 'CRDT' ? null : { name: 'Account Holder' },
+        remittance_information: ['EREF+', ' '],
+      });
+
+      expect(result.payeeName).toBe('');
+      expect(result.notes).toBeUndefined();
+    },
+  );
+
+  it.each([
+    {
+      creditor: { name: 'Creditor' },
+      debtor: { name: 'Debtor' },
+      expected: 'Creditor',
+    },
+    { creditor: null, debtor: { name: 'Debtor' }, expected: 'Debtor' },
+  ])(
+    'should preserve party fallback without a direction: $expected',
+    ({ creditor, debtor, expected }) => {
+      const result = normalizeTransaction({
+        ...mockDebitTransaction,
+        credit_debit_indicator: undefined,
+        creditor,
+        debtor,
+      });
+
+      expect(result.payeeName).toBe(expected);
+      expect(result.transactionAmount.amount).toBe('-25.99');
+    },
+  );
 
   it('should mark PDNG transactions as not booked', () => {
     const result = normalizeTransaction(mockPendingTransaction);
@@ -93,6 +190,54 @@ describe('normalizeTransaction', () => {
     expect(normalizeTransaction(noBookingOrValueDate).bookingDate).toBe(
       '2026-02-28',
     );
+  });
+});
+
+describe('isImportableTransaction', () => {
+  it('accepts a normal booked transaction (ISO date + numeric amount)', () => {
+    expect(
+      isImportableTransaction(normalizeTransaction(mockCreditTransaction)),
+    ).toBe(true);
+  });
+
+  it('accepts a pending transaction that carries a date (no regression)', () => {
+    expect(
+      isImportableTransaction(normalizeTransaction(mockPendingTransaction)),
+    ).toBe(true);
+  });
+
+  it('rejects a pending transaction with no date (the case that aborts the sync)', () => {
+    const normalized = normalizeTransaction(mockPendingTransactionNoDate);
+    expect(normalized.date).toBe('');
+    expect(normalized.booked).toBe(false);
+    expect(isImportableTransaction(normalized)).toBe(false);
+  });
+
+  it('rejects a non-ISO date', () => {
+    const normalized = normalizeTransaction({
+      ...mockCreditTransaction,
+      booking_date: '03/01/2026',
+      value_date: undefined,
+      transaction_date: undefined,
+    });
+    expect(isImportableTransaction(normalized)).toBe(false);
+  });
+
+  it('rejects a non-numeric amount', () => {
+    const normalized = normalizeTransaction({
+      ...mockCreditTransaction,
+      transaction_amount: { currency: 'EUR', amount: 'n/a' },
+    });
+    expect(isImportableTransaction(normalized)).toBe(false);
+  });
+
+  it('rejects an empty amount (Number("") would coerce to 0)', () => {
+    const normalized = normalizeTransaction({
+      ...mockCreditTransaction,
+      transaction_amount: { currency: 'EUR', amount: '' },
+    });
+    expect(normalized.transactionAmount.amount).toBe('');
+    expect(isImportableTransaction(normalized)).toBe(false);
   });
 });
 

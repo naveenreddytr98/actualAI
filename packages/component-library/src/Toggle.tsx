@@ -13,6 +13,7 @@ type ToggleProps = {
   onToggle?: (isOn: boolean) => void;
   className?: string;
   style?: CSSProperties;
+  'aria-label'?: string;
 };
 
 export const Toggle = ({
@@ -22,18 +23,23 @@ export const Toggle = ({
   onToggle,
   className,
   style,
+  'aria-label': ariaLabel,
 }: ToggleProps) => {
   return (
     <View style={style} className={className}>
       <input
         id={id}
+        aria-label={ariaLabel}
         checked={isOn}
         disabled={isDisabled}
         onChange={e => onToggle?.(e.target.checked)}
         className={css({
           height: 0,
           width: 0,
-          visibility: 'hidden',
+          opacity: 0,
+          '&:focus-visible + label': {
+            boxShadow: '0 0 0 2px ' + theme.formInputBorderSelected,
+          },
         })}
         type="checkbox"
       />

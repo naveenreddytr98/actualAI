@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { Trans, useTranslation } from 'react-i18next';
 import { Route, Routes, useLocation } from 'react-router';
@@ -13,23 +13,24 @@ import {
   SvgViewShow,
 } from '@actual-app/components/icons/v2';
 import { SpaceBetween } from '@actual-app/components/space-between';
-import { styles } from '@actual-app/components/styles';
 import type { CSSProperties } from '@actual-app/components/styles';
+import { styles } from '@actual-app/components/styles';
 import { Text } from '@actual-app/components/text';
 import { theme } from '@actual-app/components/theme';
+import { Tooltip } from '@actual-app/components/tooltip';
 import { View } from '@actual-app/components/view';
-import { listen } from '@actual-app/core/platform/client/connection';
 import { isDevelopmentEnvironment } from '@actual-app/core/shared/environment';
 import * as Platform from '@actual-app/core/shared/platform';
 import { css } from '@emotion/css';
 
 import { sync } from '#app/appSlice';
+import { SharedArrayBufferWarning } from '#components/SharedArrayBufferWarning';
 import { useGlobalPref } from '#hooks/useGlobalPref';
 import { useIsTestEnv } from '#hooks/useIsTestEnv';
-import { useMetadataPref } from '#hooks/useMetadataPref';
 import { useNavigate } from '#hooks/useNavigate';
 import { useSheetValue } from '#hooks/useSheetValue';
 import { useSyncedPref } from '#hooks/useSyncedPref';
+import { useSyncStatus } from '#hooks/useSyncStatus';
 import { useDispatch } from '#redux';
 import * as bindings from '#spreadsheet/bindings';
 
@@ -39,6 +40,7 @@ import { MonthCountSelector } from './budget/MonthCountSelector';
 import { Link } from './common/Link';
 import { HelpMenu } from './HelpMenu';
 import { LoggedInUser } from './LoggedInUser';
+import { NotificationsButton } from './news/NotificationsButton';
 import { useServerURL } from './ServerContext';
 import { useSidebar } from './sidebar/SidebarProvider';
 import { ThemeSelector } from './ThemeSelector';
@@ -88,20 +90,33 @@ function PrivacyButton({ style }: PrivacyButtonProps) {
   );
 
   return (
-    <Button
-      variant="bare"
-      aria-label={
-        isPrivacyEnabled ? t('Disable privacy mode') : t('Enable privacy mode')
+    <Tooltip
+      placement="bottom end"
+      content={
+        isPrivacyEnabled ? (
+          <Trans>Disable privacy mode</Trans>
+        ) : (
+          <Trans>Enable privacy mode</Trans>
+        )
       }
-      onPress={() => setPrivacyEnabledPref(String(!isPrivacyEnabled))}
-      style={style}
     >
-      {isPrivacyEnabled ? (
-        <SvgViewHide style={privacyIconStyle} />
-      ) : (
-        <SvgViewShow style={privacyIconStyle} />
-      )}
-    </Button>
+      <Button
+        variant="bare"
+        aria-label={
+          isPrivacyEnabled
+            ? t('Disable privacy mode')
+            : t('Enable privacy mode')
+        }
+        onPress={() => setPrivacyEnabledPref(String(!isPrivacyEnabled))}
+        style={style}
+      >
+        {isPrivacyEnabled ? (
+          <SvgViewHide style={privacyIconStyle} />
+        ) : (
+          <SvgViewShow style={privacyIconStyle} />
+        )}
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -111,45 +126,12 @@ type ServerSyncButtonProps = {
 };
 function ServerSyncButton({ style, isMobile = false }: ServerSyncButtonProps) {
   const { t } = useTranslation();
-  const [cloudFileId] = useMetadataPref('cloudFileId');
   const dispatch = useDispatch();
-  const [syncing, setSyncing] = useState(false);
-  const [syncState, setSyncState] = useState<
-    null | 'offline' | 'local' | 'disabled' | 'error'
-  >(null);
-
-  useEffect(() => {
-    const unlisten = listen('sync-event', event => {
-      if (event.type === 'start') {
-        setSyncing(true);
-        setSyncState(null);
-      } else {
-        // Give the layout some time to apply the starting animation
-        // so we always finish it correctly even if it's almost
-        // instant
-        setTimeout(() => {
-          setSyncing(false);
-        }, 200);
-      }
-
-      if (event.type === 'error') {
-        // Use the offline state if either there is a network error or
-        // if this file isn't a "cloud file". You can't sync a local
-        // file.
-        if (event.subtype === 'network') {
-          setSyncState('offline');
-        } else if (!cloudFileId) {
-          setSyncState('local');
-        } else {
-          setSyncState('error');
-        }
-      } else if (event.type === 'success') {
-        setSyncState(event.syncDisabled ? 'disabled' : null);
-      }
-    });
-
-    return unlisten;
-  }, [cloudFileId]);
+  // Give the layout some time to apply the starting animation so we
+  // always finish it correctly even if the sync is almost instant
+  const { isSyncing: syncing, syncState } = useSyncStatus({
+    syncingEndDelayMs: 200,
+  });
 
   const mobileColor =
     syncState === 'error'
@@ -166,7 +148,7 @@ function ServerSyncButton({ style, isMobile = false }: ServerSyncButtonProps) {
           syncState === 'offline' ||
           syncState === 'local'
         ? theme.buttonBareDisabledText
-        : 'inherit';
+        : theme.buttonBareText;
 
   const activeStyle = isMobile
     ? {
@@ -209,44 +191,62 @@ function ServerSyncButton({ style, isMobile = false }: ServerSyncButtonProps) {
     [onSync],
   );
 
+  const tooltipContent =
+    syncState === 'error' ? (
+      <Trans>Sync error — click to retry</Trans>
+    ) : syncState === 'offline' ? (
+      <Trans>Offline — will sync when reconnected</Trans>
+    ) : syncState === 'local' ? (
+      <Trans>Local file, not connected to a server</Trans>
+    ) : syncState === 'disabled' ? (
+      <Trans>Syncing disabled for this file</Trans>
+    ) : (
+      <Trans>
+        Sync with your server to back up this file and access it on other
+        devices
+      </Trans>
+    );
+
   return (
-    <Button
-      variant="bare"
-      aria-label={t('Server Sync')}
-      className={css({
-        ...(isMobile
-          ? {
-              ...style,
-              WebkitAppRegion: 'none',
-              ...mobileIconStyle,
-            }
-          : {
-              ...style,
-              WebkitAppRegion: 'none',
-              color: desktopColor,
-            }),
-        '&[data-hovered]': hoveredStyle,
-        '&[data-pressed]': activeStyle,
-      })}
-      onPress={onSync}
-      isDisabled={syncState === 'offline'}
-      aria-disabled={syncState === 'offline'}
-    >
-      {isMobile ? (
-        syncState === 'error' ? (
-          <SvgAlertTriangle width={14} height={14} />
+    <Tooltip placement="bottom end" content={tooltipContent}>
+      <Button
+        variant="bare"
+        aria-label={t('Server Sync')}
+        className={css({
+          ...(isMobile
+            ? {
+                ...style,
+                WebkitAppRegion: 'none',
+                ...mobileIconStyle,
+              }
+            : {
+                ...style,
+                WebkitAppRegion: 'none',
+                color: desktopColor,
+              }),
+          '&[data-hovered]': hoveredStyle,
+          '&[data-pressed]': activeStyle,
+        })}
+        onPress={onSync}
+        isDisabled={syncState === 'offline'}
+        aria-disabled={syncState === 'offline'}
+      >
+        {isMobile ? (
+          syncState === 'error' ? (
+            <SvgAlertTriangle width={14} height={14} />
+          ) : (
+            <AnimatedRefresh width={18} height={18} animating={syncing} />
+          )
+        ) : syncState === 'error' ? (
+          <SvgAlertTriangle width={13} />
         ) : (
-          <AnimatedRefresh width={18} height={18} animating={syncing} />
-        )
-      ) : syncState === 'error' ? (
-        <SvgAlertTriangle width={13} />
-      ) : (
-        <AnimatedRefresh animating={syncing} />
-      )}
-      <Text style={isMobile ? { ...mobileTextStyle } : null}>
-        {syncState === 'disabled' ? ` ${t('Disabled')}` : null}
-      </Text>
-    </Button>
+          <AnimatedRefresh animating={syncing} />
+        )}
+        <Text style={isMobile ? { ...mobileTextStyle } : null}>
+          {syncState === 'disabled' ? ` ${t('Disabled')}` : null}
+        </Text>
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -312,7 +312,7 @@ export function Titlebar({ style }: TitlebarProps) {
         >
           <SvgNavigationMenu
             className="menu"
-            style={{ width: 15, height: 15, color: theme.pageText, left: 0 }}
+            style={{ width: 15, height: 15, left: 0 }}
           />
         </Button>
       )}
@@ -326,7 +326,7 @@ export function Titlebar({ style }: TitlebarProps) {
                 <SvgArrowLeft
                   width={10}
                   height={10}
-                  style={{ marginRight: 5, color: 'currentColor' }}
+                  style={{ marginRight: 5 }}
                 />{' '}
                 <Trans>Back</Trans>
               </Button>
@@ -343,7 +343,9 @@ export function Titlebar({ style }: TitlebarProps) {
         <UncategorizedButton />
         {isDevelopmentEnvironment() && !isTestEnv && <ThemeSelector />}
         <PrivacyButton />
+        <NotificationsButton />
         {serverURL ? <ServerSyncButton /> : null}
+        <SharedArrayBufferWarning />
         <LoggedInUser />
         <HelpMenu />
       </SpaceBetween>

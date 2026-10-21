@@ -3,27 +3,23 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
-import { useTranslation } from 'react-i18next';
 
 import { theme } from '@actual-app/components/theme';
 import { send } from '@actual-app/core/platform/client/connection';
-import * as monthUtils from '@actual-app/core/shared/months';
-import { q } from '@actual-app/core/shared/query';
-import { getUpcomingDays } from '@actual-app/core/shared/schedules';
 import {
   addSplitTransaction,
   applyTransactionDiff,
   isPreviewId,
+  makeEmptySplitSubtransactions,
   realizeTempTransactions,
   splitTransaction,
   updateTransaction,
 } from '@actual-app/core/shared/transactions';
-import { applyChanges, getChangedValues } from '@actual-app/core/shared/util';
+import { applyChanges } from '@actual-app/core/shared/util';
 import type {
   AccountEntity,
   CategoryEntity,
   PayeeEntity,
-  RuleActionEntity,
   RuleConditionEntity,
   ScheduleEntity,
   TransactionEntity,
@@ -40,6 +36,8 @@ import { pushModal } from '#modals/modalsSlice';
 import { addNotification } from '#notifications/notificationsSlice';
 import { useDispatch } from '#redux';
 
+import { applyRulesToTransaction } from './applyRulesToTransaction';
+import type { ClearedFieldsByTransaction } from './table/utils';
 import { TransactionTable } from './TransactionsTable';
 import type { TransactionTableProps } from './TransactionsTable';
 // When data changes, there are two ways to update the UI:
@@ -85,157 +83,6 @@ async function saveDiffAndApply(diff, changes, onChange, learnCategories) {
   );
 }
 
-export async function createSingleTimeScheduleFromTransaction(
-  transaction: TransactionEntity,
-): Promise<ScheduleEntity['id']> {
-  const conditions: RuleConditionEntity[] = [
-    { op: 'is', field: 'date', value: transaction.date },
-  ];
-
-  const actions: RuleActionEntity[] = [];
-
-  const conditionFields = ['amount', 'payee', 'account'];
-
-  conditionFields.forEach(field => {
-    const value = transaction[field];
-    if (value != null && value !== '') {
-      conditions.push({
-        op: 'is',
-        field,
-        value,
-      } as RuleConditionEntity);
-    }
-  });
-
-  if (transaction.is_parent && transaction.subtransactions) {
-    if (transaction.notes) {
-      actions.push({
-        op: 'set',
-        field: 'notes',
-        value: transaction.notes,
-        options: {
-          splitIndex: 0,
-        },
-      } as RuleActionEntity);
-    }
-
-    transaction.subtransactions.forEach((split, index) => {
-      const splitIndex = index + 1;
-
-      if (split.amount != null) {
-        actions.push({
-          op: 'set-split-amount',
-          value: split.amount,
-          options: {
-            splitIndex,
-            method: 'fixed-amount',
-          },
-        } as RuleActionEntity);
-      }
-
-      if (split.category) {
-        actions.push({
-          op: 'set',
-          field: 'category',
-          value: split.category,
-          options: {
-            splitIndex,
-          },
-        } as RuleActionEntity);
-      }
-
-      if (split.notes) {
-        actions.push({
-          op: 'set',
-          field: 'notes',
-          value: split.notes,
-          options: {
-            splitIndex,
-          },
-        } as RuleActionEntity);
-      }
-    });
-  } else {
-    if (transaction.category) {
-      actions.push({
-        op: 'set',
-        field: 'category',
-        value: transaction.category,
-      } as RuleActionEntity);
-    }
-
-    if (transaction.notes) {
-      actions.push({
-        op: 'set',
-        field: 'notes',
-        value: transaction.notes,
-      } as RuleActionEntity);
-    }
-  }
-
-  const formattedDate = monthUtils.format(transaction.date, 'MMM dd, yyyy');
-  const timestamp = Date.now();
-  const scheduleName = `Auto-created future transaction (${formattedDate}) - ${timestamp}`;
-
-  const scheduleId = await send('schedule/create', {
-    conditions,
-    schedule: {
-      posts_transaction: true,
-      name: scheduleName,
-    },
-  });
-
-  if (actions.length > 0) {
-    const schedules = await send(
-      'query',
-      q('schedules').filter({ id: scheduleId }).select('rule').serialize(),
-    );
-
-    const ruleId = schedules?.data?.[0]?.rule;
-
-    if (ruleId) {
-      const rule = await send('rule-get', { id: ruleId });
-
-      if (rule) {
-        const linkScheduleActions = rule.actions.filter(
-          a => a.op === 'link-schedule',
-        );
-
-        await send('rule-update', {
-          ...rule,
-          actions: [...linkScheduleActions, ...actions],
-        });
-      }
-    }
-  }
-
-  return scheduleId;
-}
-
-function isFutureTransaction(transaction: TransactionEntity): boolean {
-  const today = monthUtils.currentDay();
-  return transaction.date > today;
-}
-
-function calculateFutureTransactionInfo(
-  transaction: TransactionEntity,
-  upcomingLength: string,
-) {
-  const today = monthUtils.currentDay();
-  const upcomingDays = getUpcomingDays(upcomingLength, today);
-  const daysUntilTransaction = monthUtils.differenceInCalendarDays(
-    transaction.date,
-    today,
-  );
-  const isBeyondWindow = daysUntilTransaction > upcomingDays;
-
-  return {
-    isBeyondWindow,
-    daysUntilTransaction,
-    upcomingDays,
-  };
-}
-
 type TransactionListProps = Pick<
   TransactionTableProps,
   | 'accounts'
@@ -264,8 +111,10 @@ type TransactionListProps = Pick<
   | 'showAccount'
   | 'showBalances'
   | 'showCleared'
+  | 'showGroup'
   | 'showReconciled'
   | 'showSelection'
+  | 'columnOrder'
   | 'sortField'
   | 'transactions'
 > & {
@@ -299,7 +148,9 @@ export function TransactionList({
   showBalances,
   showReconciled,
   showCleared,
+  showGroup,
   showAccount,
+  columnOrder,
   isAdding,
   isNew,
   isMatched,
@@ -326,102 +177,23 @@ export function TransactionList({
   onScheduleAction,
   onMakeAsNonSplitTransactions,
 }: TransactionListProps) {
-  const { t } = useTranslation();
-
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const [learnCategories = 'true'] = useSyncedPref('learn-categories');
   const isLearnCategoriesEnabled = String(learnCategories) === 'true';
-  const [upcomingLength = '7'] = useSyncedPref(
-    'upcomingScheduledTransactionLength',
-  );
 
   const transactionsLatest = useRef<readonly TransactionEntity[]>([]);
   useLayoutEffect(() => {
     transactionsLatest.current = transactions;
   }, [transactions]);
 
-  const promptToConvertToSchedule = useCallback(
-    (
-      transaction: TransactionEntity,
-      onConfirm: () => Promise<void>,
-      onCancel: () => Promise<void>,
-    ) => {
-      const futureInfo = calculateFutureTransactionInfo(
-        transaction,
-        upcomingLength,
-      );
-
-      dispatch(
-        pushModal({
-          modal: {
-            name: 'convert-to-schedule',
-            options: {
-              ...futureInfo,
-              onConfirm: async () => {
-                await onConfirm();
-                dispatch(
-                  addNotification({
-                    notification: {
-                      type: 'message',
-                      message: t('Schedule created successfully'),
-                    },
-                  }),
-                );
-                onRefetch();
-              },
-              onCancel: async () => {
-                await onCancel();
-                onRefetch();
-              },
-            },
-          },
-        }),
-      );
-    },
-    [dispatch, onRefetch, upcomingLength, t],
-  );
-
   const onAdd = useCallback(
     async (newTransactions: TransactionEntity[]) => {
       newTransactions = realizeTempTransactions(newTransactions);
-
-      const parentTransaction = newTransactions.find(t => !t.is_child);
-      const isLinkedToSchedule = !!parentTransaction?.schedule;
-
-      if (
-        parentTransaction &&
-        isFutureTransaction(parentTransaction) &&
-        !isLinkedToSchedule
-      ) {
-        const transactionWithSubtransactions = {
-          ...parentTransaction,
-          subtransactions: newTransactions.filter(
-            t => t.is_child && t.parent_id === parentTransaction.id,
-          ),
-        };
-
-        promptToConvertToSchedule(
-          transactionWithSubtransactions,
-          async () => {
-            await createSingleTimeScheduleFromTransaction(
-              transactionWithSubtransactions,
-            );
-          },
-          async () => {
-            await saveDiff(
-              { added: newTransactions },
-              isLearnCategoriesEnabled,
-            );
-          },
-        );
-        return;
-      }
-
       await saveDiff({ added: newTransactions }, isLearnCategoriesEnabled);
       onRefetch();
     },
-    [isLearnCategoriesEnabled, onRefetch, promptToConvertToSchedule],
+    [isLearnCategoriesEnabled, onRefetch],
   );
 
   const onSave = useCallback(
@@ -451,33 +223,9 @@ export function TransactionList({
         }
       };
 
-      const isLinkedToSchedule = !!transaction.schedule;
-      if (isFutureTransaction(transaction) && !isLinkedToSchedule) {
-        const originalTransaction = transactionsLatest.current.find(
-          t => t.id === transaction.id,
-        );
-        const dateChanged =
-          !originalTransaction || originalTransaction.date !== transaction.date;
-
-        if (dateChanged || !originalTransaction) {
-          promptToConvertToSchedule(
-            transaction,
-            async () => {
-              if (transaction.id && !transaction.id.startsWith('temp')) {
-                await send('transaction-delete', { id: transaction.id });
-              }
-
-              await createSingleTimeScheduleFromTransaction(transaction);
-            },
-            saveTransaction,
-          );
-          return;
-        }
-      }
-
       await saveTransaction();
     },
-    [isLearnCategoriesEnabled, onChange, onRefetch, promptToConvertToSchedule],
+    [isLearnCategoriesEnabled, onChange, onRefetch],
   );
 
   const onAddSplit = useCallback(
@@ -497,7 +245,11 @@ export function TransactionList({
 
   const onSplit = useCallback(
     (id: TransactionEntity['id']) => {
-      const changes = splitTransaction(transactionsLatest.current, id);
+      const changes = splitTransaction(
+        transactionsLatest.current,
+        id,
+        makeEmptySplitSubtransactions,
+      );
       onChange(changes.newTransaction, changes.data);
       void saveDiffAndApply(
         changes.diff,
@@ -514,6 +266,7 @@ export function TransactionList({
     async (
       transaction: TransactionEntity,
       updatedFieldName: string | null = null,
+      clearedFields?: ClearedFieldsByTransaction,
     ) => {
       const afterRules = await send('rules-run', { transaction });
 
@@ -530,38 +283,12 @@ export function TransactionList({
         );
       }
 
-      const diff = getChangedValues(transaction, afterRules);
-
-      const newTransaction: TransactionEntity = { ...transaction };
-      if (diff) {
-        Object.keys(diff).forEach(field => {
-          if (
-            newTransaction[field] == null ||
-            newTransaction[field] === '' ||
-            newTransaction[field] === 0 ||
-            newTransaction[field] === false
-          ) {
-            newTransaction[field] = diff[field];
-          }
-        });
-
-        // When a rule updates a parent transaction, overwrite all changes to the current field in subtransactions.
-        if (
-          transaction.is_parent &&
-          diff.subtransactions !== undefined &&
-          updatedFieldName !== null
-        ) {
-          newTransaction.subtransactions = diff.subtransactions.map(
-            (st, idx) => ({
-              ...(newTransaction.subtransactions?.[idx] || st),
-              ...(st[updatedFieldName] != null && {
-                [updatedFieldName]: st[updatedFieldName],
-              }),
-            }),
-          );
-        }
-      }
-      return newTransaction;
+      return applyRulesToTransaction(
+        transaction,
+        afterRules,
+        updatedFieldName,
+        clearedFields,
+      );
     },
     [dispatch],
   );
@@ -569,7 +296,7 @@ export function TransactionList({
   const onManagePayees = useCallback(
     (id: PayeeEntity['id']) => {
       void navigate(
-        '/payees',
+        '/settings/payees',
         id ? { state: { selectedPayee: id } } : undefined,
       );
     },
@@ -620,6 +347,46 @@ export function TransactionList({
       // Find the transaction being dragged to determine if it's a child
       const draggedTrans = allTransactions.find(t => t.id === id);
       if (!draggedTrans) {
+        return;
+      }
+
+      // Preview (upcoming schedule) reordering: only against other
+      // previews on the same date. Never mix preview and real transactions.
+      if (isPreviewId(id) !== isPreviewId(targetId)) {
+        return;
+      }
+      if (isPreviewId(id)) {
+        const targetTrans = allTransactions.find(t => t.id === targetId);
+        if (!targetTrans || targetTrans.date !== draggedTrans.date) {
+          return;
+        }
+
+        const previews = allTransactions.filter(
+          t => isPreviewId(t.id) && t.date === draggedTrans.date,
+        );
+        const targetIdx = previews.findIndex(t => t.id === targetId);
+        if (targetIdx === -1) {
+          return;
+        }
+
+        let apiTargetId: string | null;
+        if (dropPos === 'after') {
+          apiTargetId = targetTrans.schedule ?? null;
+        } else {
+          const aboveIdx = targetIdx - 1;
+          apiTargetId =
+            aboveIdx >= 0 ? (previews[aboveIdx].schedule ?? null) : null;
+        }
+
+        if (!draggedTrans.schedule) {
+          return;
+        }
+
+        await send('schedule/move', {
+          id: draggedTrans.schedule,
+          targetId: apiTargetId,
+        });
+        onRefetch();
         return;
       }
 
@@ -738,6 +505,8 @@ export function TransactionList({
         showCleared={showCleared}
         showAccount={showAccount}
         showCategory
+        showGroup={showGroup}
+        columnOrder={columnOrder}
         currentAccountId={account && account.id}
         currentCategoryId={category && category.id}
         isAdding={isAdding}

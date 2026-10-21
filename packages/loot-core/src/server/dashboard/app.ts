@@ -1,4 +1,4 @@
-import isMatch from 'lodash/isMatch';
+import { isMatch } from 'es-toolkit/compat';
 import { v4 as uuidv4 } from 'uuid';
 
 import { captureException } from '#platform/exceptions';
@@ -28,7 +28,9 @@ function isExportedCustomReportWidget(
   return widget.type === 'custom-report';
 }
 
-function isWidgetType(type: string): type is DashboardWidgetEntity['type'] {
+export function isWidgetType(
+  type: string,
+): type is DashboardWidgetEntity['type'] {
   return [
     'net-worth-card',
     'cash-flow-card',
@@ -41,6 +43,9 @@ function isWidgetType(type: string): type is DashboardWidgetEntity['type'] {
     'formula-card',
     'custom-report',
     'sankey-card',
+    'balance-forecast-card',
+    'age-of-money-card',
+    'monte-carlo-card',
   ].includes(type);
 }
 
@@ -147,12 +152,14 @@ async function updateDashboard(
     (dbWidgets as DashboardWidgetEntity[]).map(widget => [widget.id, widget]),
   );
 
-  await Promise.all(
-    widgets
-      // Perform an update query only if the widget actually has changes
-      .filter(widget => !isMatch(dbWidgetMap.get(widget.id) ?? {}, widget))
-      .map(widget => db.update('dashboard', widget)),
-  );
+  await batchMessages(async () => {
+    await Promise.all(
+      widgets
+        // Perform an update query only if the widget actually has changes
+        .filter(widget => !isMatch(dbWidgetMap.get(widget.id) ?? {}, widget))
+        .map(widget => db.updateWithSchema('dashboard', widget)),
+    );
+  });
 }
 
 async function updateDashboardWidget(

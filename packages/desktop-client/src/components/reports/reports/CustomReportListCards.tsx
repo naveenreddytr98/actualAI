@@ -14,12 +14,12 @@ import type { CustomReportEntity } from '@actual-app/core/types/models';
 import { DateRange } from '#components/reports/DateRange';
 import { ReportCard } from '#components/reports/ReportCard';
 import { ReportCardName } from '#components/reports/ReportCardName';
-import { useDashboardWidgetCopyMenu } from '#components/reports/useDashboardWidgetCopyMenu';
 import { calculateHasWarning } from '#components/reports/util';
 import { useAccounts } from '#hooks/useAccounts';
 import { useCategories } from '#hooks/useCategories';
 import { usePayees } from '#hooks/usePayees';
 import { useSyncedPref } from '#hooks/useSyncedPref';
+import { useTags } from '#hooks/useTags';
 import { addNotification } from '#notifications/notificationsSlice';
 import { useDispatch } from '#redux';
 import { useUpdateReportMutation } from '#reports/mutations';
@@ -28,23 +28,21 @@ import { GetCardData } from './GetCardData';
 import { MissingReportCard } from './MissingReportCard';
 
 type CustomReportListCardsProps = {
+  widgetId: string;
   isEditing?: boolean;
   report?: CustomReportEntity;
-  onRemove: () => void;
-  onCopy: (targetDashboardId: string) => void;
 };
 
 export function CustomReportListCards({
+  widgetId,
   isEditing,
   report,
-  onRemove,
-  onCopy,
 }: CustomReportListCardsProps) {
   // It's possible for a dashboard to reference a non-existing
   // custom report
   if (!report) {
     return (
-      <MissingReportCard isEditing={isEditing} onRemove={onRemove}>
+      <MissingReportCard widgetId={widgetId} isEditing={isEditing}>
         <Trans>This custom report has been deleted.</Trans>
       </MissingReportCard>
     );
@@ -52,20 +50,18 @@ export function CustomReportListCards({
 
   return (
     <CustomReportListCardsInner
+      widgetId={widgetId}
       isEditing={isEditing}
       report={report}
-      onRemove={onRemove}
-      onCopy={onCopy}
     />
   );
 }
 
 function CustomReportListCardsInner({
+  widgetId,
   isEditing,
   report,
-  onRemove,
-  onCopy,
-}: Omit<CustomReportListCardsProps, 'report'> & {
+}: CustomReportListCardsProps & {
   report: CustomReportEntity;
 }) {
   const { t } = useTranslation();
@@ -76,17 +72,17 @@ function CustomReportListCardsInner({
   const [earliestTransaction, setEarliestTransaction] = useState('');
   const [latestTransaction, setLatestTransaction] = useState('');
 
-  const { menuItems: copyMenuItems, handleMenuSelect: handleCopyMenuSelect } =
-    useDashboardWidgetCopyMenu(onCopy);
-
   const { data: payees = [] } = usePayees();
   const { data: accounts = [] } = useAccounts();
   const { data: categories = { list: [], grouped: [] } } = useCategories();
+  const { data: tags = [] } = useTags();
 
   const hasWarning = calculateHasWarning(report.conditions ?? [], {
     categories: categories.list,
     payees,
     accounts,
+    tags,
+    tagScope: report.groupBy === 'Tag' ? report.tagScope : undefined,
   });
 
   const [_firstDayOfWeekIdx] = useSyncedPref('firstDayOfWeekIdx');
@@ -139,33 +135,11 @@ function CustomReportListCardsInner({
 
   return (
     <ReportCard
+      widgetId={widgetId}
       isEditing={isEditing}
       disableClick={nameMenuOpen}
       to={`/reports/custom/${report.id}`}
-      menuItems={[
-        {
-          name: 'rename',
-          text: t('Rename'),
-        },
-        {
-          name: 'remove',
-          text: t('Remove'),
-        },
-        ...copyMenuItems,
-      ]}
-      onMenuSelect={item => {
-        if (handleCopyMenuSelect(item)) return;
-        switch (item) {
-          case 'remove':
-            onRemove();
-            break;
-          case 'rename':
-            setNameMenuOpen(true);
-            break;
-          default:
-            throw new Error(`Unrecognized menu option: ${item}`);
-        }
-      }}
+      onRename={() => setNameMenuOpen(true)}
     >
       <View style={{ flex: 1, padding: 10 }}>
         <View
@@ -195,6 +169,7 @@ function CustomReportListCardsInner({
           payees={payees}
           accounts={accounts}
           categories={categories}
+          tags={tags}
           earliestTransaction={earliestTransaction}
           latestTransaction={latestTransaction}
           firstDayOfWeekIdx={firstDayOfWeekIdx}
@@ -205,7 +180,7 @@ function CustomReportListCardsInner({
         <View style={{ padding: 5, position: 'absolute', bottom: 0 }}>
           <Tooltip
             content={t(
-              'The widget is configured to use a non-existing filter value (i.e. category/account/payee). Edit the filters used in this report widget to remove the warning.',
+              'The widget is configured to use a non-existing filter or tag value. Edit this report to remove the warning.',
             )}
             placement="bottom start"
             style={{ ...styles.tooltip, maxWidth: 300 }}

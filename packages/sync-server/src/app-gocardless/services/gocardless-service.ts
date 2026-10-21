@@ -1,3 +1,4 @@
+import createDebug from 'debug';
 import { v4 as uuidv4 } from 'uuid';
 
 import { BankFactory } from '#app-gocardless/bank-factory';
@@ -5,6 +6,7 @@ import type { IBank } from '#app-gocardless/banks/bank.interface';
 import {
   AccessDeniedError,
   AccountNotLinkedToRequisition,
+  EndUserAgreementExpiredError,
   GenericGoCardlessError,
   InvalidGoCardlessTokenError,
   InvalidInputDataError,
@@ -40,6 +42,8 @@ import { SecretName, secretsService } from '#services/secrets-service';
 import type { AccountDetailsResponse, TokenResponse } from './gocardless-api';
 import { GoCardlessApi, GoCardlessApiError } from './gocardless-api';
 
+const debugSensitive = createDebug('actual-sensitive:gocardless');
+
 const clients = new Map<string, GoCardlessApi>();
 
 const getGocardlessClient = (): GoCardlessApi => {
@@ -59,6 +63,22 @@ const getGocardlessClient = (): GoCardlessApi => {
   return client;
 };
 
+const isEuaExpiredError = (error: unknown): boolean => {
+  if (!(error instanceof GoCardlessApiError)) {
+    return false;
+  }
+
+  const data: unknown = error.response.data;
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+
+  const { summary } = data as Record<string, unknown>;
+  return (
+    typeof summary === 'string' && /end user agreement.*expired/i.test(summary)
+  );
+};
+
 export const handleGoCardlessError = (error: unknown): never => {
   const status =
     error instanceof GoCardlessApiError ? error.response.status : undefined;
@@ -67,6 +87,9 @@ export const handleGoCardlessError = (error: unknown): never => {
     case 400:
       throw new InvalidInputDataError(error);
     case 401:
+      if (isEuaExpiredError(error)) {
+        throw new EndUserAgreementExpiredError(error);
+      }
       throw new InvalidGoCardlessTokenError(error);
     case 403:
       throw new AccessDeniedError(error);
@@ -319,8 +342,7 @@ export const goCardlessService = {
     });
 
     const response = await client.initSession(body).catch(async () => {
-      console.log('Failed to link using:');
-      console.log(body);
+      debugSensitive('Failed to link using: %O', body);
       console.log(
         'Falling back to accessValidForDays = 90 ' +
           'and maxHistoricalDays = 89',

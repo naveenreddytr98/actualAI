@@ -21,8 +21,14 @@ vi.mock('../utils/jwt', () => ({
 vi.mock('../../util/middlewares', () => ({
   requestLoggerMiddleware: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
-  validateSessionMiddleware: (_req: unknown, _res: unknown, next: () => void) =>
-    next(),
+  validateSessionMiddleware: (
+    _req: unknown,
+    res: { locals: { user_id?: string } },
+    next: () => void,
+  ) => {
+    res.locals.user_id = 'genericAdmin';
+    next();
+  },
 }));
 
 vi.mock('../../app-gocardless/util/handle-error', () => ({
@@ -450,6 +456,7 @@ describe('Enable Banking Express routes', () => {
             entry_reference: 'tx-1',
             transaction_amount: { currency: 'EUR', amount: '10.00' },
             status: 'BOOK',
+            booking_date: '2026-01-05',
           },
         ],
         continuation_key: 'page-2',
@@ -461,6 +468,7 @@ describe('Enable Banking Express routes', () => {
             entry_reference: 'tx-2',
             transaction_amount: { currency: 'EUR', amount: '20.00' },
             status: 'BOOK',
+            booking_date: '2026-01-06',
           },
         ],
       });
@@ -528,16 +536,13 @@ describe('Enable Banking Express routes', () => {
 
       await request(app)
         .post('/transactions')
-        .set('X-Forwarded-For', '203.0.113.42, 10.0.0.1')
+        .set('X-Forwarded-For', '8.8.8.8, 10.0.0.1')
         .set('User-Agent', 'TestBrowser/1.0')
         .send({ accountId: 'uid-1', startDate: '2026-01-01' });
 
       // Both the balance and transaction fetch calls should include PSU headers
       for (const call of mockFetch.mock.calls) {
-        expect(call[1].headers).toHaveProperty(
-          'Psu-Ip-Address',
-          '203.0.113.42',
-        );
+        expect(call[1].headers).toHaveProperty('Psu-Ip-Address', '8.8.8.8');
         expect(call[1].headers).toHaveProperty(
           'Psu-User-Agent',
           'TestBrowser/1.0',

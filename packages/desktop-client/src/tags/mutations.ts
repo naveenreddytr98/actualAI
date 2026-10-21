@@ -85,6 +85,32 @@ export function useUpdateTagMutation() {
   });
 }
 
+type RenameTagPayload = {
+  id: TagEntity['id'];
+  tag: TagEntity['tag'];
+};
+
+export function useRenameTagMutation() {
+  const queryClient = useQueryClient();
+  const dispatch = useDispatch();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: async ({ id, tag }: RenameTagPayload) => {
+      return await send('tags-rename', { id, tag });
+    },
+    onSuccess: () => invalidateQueries(queryClient),
+    onError: error => {
+      console.error('Error renaming tag:', error);
+      dispatchErrorNotification(
+        dispatch,
+        t('There was an error renaming the tag. Please try again.'),
+        error,
+      );
+    },
+  });
+}
+
 type DeleteTagPayload = {
   id: TagEntity['id'];
 };
@@ -129,6 +155,56 @@ export function useDeleteTagsMutation() {
       dispatchErrorNotification(
         dispatch,
         t('There was an error deleting the tags. Please try again.'),
+        error,
+      );
+    },
+  });
+}
+
+type HideTagsPayload = {
+  ids: Array<TagEntity['id']>;
+};
+
+export function useHideTagsMutation() {
+  const queryClient = useQueryClient();
+  const dispatch = useDispatch();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: async ({ ids }: HideTagsPayload) => {
+      return await send('tags-hide-all', ids);
+    },
+    onSuccess: () => invalidateQueries(queryClient),
+    onError: error => {
+      console.error('Error hiding tags:', error);
+      dispatchErrorNotification(
+        dispatch,
+        t('There was an error hiding the tags. Please try again.'),
+        error,
+      );
+    },
+  });
+}
+
+type UnhideTagsPayload = {
+  ids: Array<TagEntity['id']>;
+};
+
+export function useUnhideTagsMutation() {
+  const queryClient = useQueryClient();
+  const dispatch = useDispatch();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: async ({ ids }: UnhideTagsPayload) => {
+      return await send('tags-unhide-all', ids);
+    },
+    onSuccess: () => invalidateQueries(queryClient),
+    onError: error => {
+      console.error('Error hiding tags:', error);
+      dispatchErrorNotification(
+        dispatch,
+        t('There was an error hiding the tags. Please try again.'),
         error,
       );
     },

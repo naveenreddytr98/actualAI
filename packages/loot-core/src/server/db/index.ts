@@ -21,6 +21,7 @@ import {
   schemaConfig,
 } from '#server/aql';
 import {
+  accountGroupModel,
   accountModel,
   categoryGroupModel,
   categoryModel,
@@ -41,6 +42,7 @@ import {
 } from './sort';
 import type {
   DbAccount,
+  DbAccountGroup,
   DbBank,
   DbCategory,
   DbCategoryGroup,
@@ -116,19 +118,19 @@ export async function loadClock() {
 // Functions
 export function runQuery(
   sql: string | Statement,
-  params?: Array<string | number>,
+  params?: sqlite.SqlParam[],
   fetchAll?: false,
 ): { changes: unknown };
 
 export function runQuery<T>(
   sql: string | Statement,
-  params: Array<string | number> | undefined,
+  params: sqlite.SqlParam[] | undefined,
   fetchAll: true,
 ): T[];
 
 export function runQuery<T>(
   sql: string | Statement,
-  params: (string | number)[],
+  params: sqlite.SqlParam[],
   fetchAll: boolean,
 ) {
   if (fetchAll) {
@@ -160,8 +162,11 @@ function resetQueryCache() {
   _queryCache = new LRUCache<string, Statement>({ max: 100 });
 }
 
-export function transaction(fn: () => void) {
-  return sqlite.transaction(db, fn);
+export function transaction(
+  fn: () => void,
+  options?: sqlite.TransactionOptions,
+) {
+  return sqlite.transaction(db, fn, options);
 }
 
 export function asyncTransaction(fn: () => Promise<void>) {
@@ -171,18 +176,18 @@ export function asyncTransaction(fn: () => Promise<void>) {
 // This function is marked as async because `runQuery` is no longer
 // async. We return a promise here until we've audited all the code to
 // make sure nothing calls `.then` on this.
-export async function all<T>(sql: string, params?: (string | number)[]) {
+export async function all<T>(sql: string, params?: sqlite.SqlParam[]) {
   return runQuery<T>(sql, params, true);
 }
 
-export async function first<T>(sql, params?: (string | number)[]) {
+export async function first<T>(sql, params?: sqlite.SqlParam[]) {
   const arr = runQuery<T>(sql, params, true);
   return arr.length === 0 ? null : arr[0];
 }
 
 // The underlying sql system is now sync, but we can't update `first` yet
 // without auditing all uses of it
-export function firstSync<T>(sql, params?: (string | number)[]) {
+export function firstSync<T>(sql, params?: sqlite.SqlParam[]) {
   const arr = runQuery<T>(sql, params, true);
   return arr.length === 0 ? null : arr[0];
 }
@@ -190,7 +195,7 @@ export function firstSync<T>(sql, params?: (string | number)[]) {
 // This function is marked as async because `runQuery` is no longer
 // async. We return a promise here until we've audited all the code to
 // make sure nothing calls `.then` on this.
-export async function run(sql, params?: (string | number)[]) {
+export async function run(sql, params?: sqlite.SqlParam[]) {
   return runQuery(sql, params);
 }
 
@@ -389,20 +394,25 @@ export async function insertCategoryGroup(
 }
 
 export async function updateCategoryGroup(
-  group: WithRequired<Partial<DbCategoryGroup>, 'id' | 'name' | 'is_income'>,
+  group: WithRequired<Partial<DbCategoryGroup>, 'id' | 'is_income'>,
 ) {
-  const existingGroup = await first<
-    Pick<DbCategoryGroup, 'id' | 'name' | 'hidden'>
-  >(
-    `SELECT id, name, hidden FROM category_groups WHERE UPPER(name) = ? AND id != ? AND tombstone = 0 LIMIT 1`,
-    [group.name.toUpperCase(), group.id],
-  );
-  if (existingGroup) {
-    throw new Error(
-      `A ${
-        existingGroup.hidden ? 'hidden ' : ''
-      }'${existingGroup.name}' category group already exists.`,
+  // An update that does not touch the name cannot introduce a duplicate, and
+  // `name` is genuinely absent on one: api/category-group-update forwards the
+  // caller's Partial, and update() writes only the keys it is given (#8857).
+  if (group.name !== undefined) {
+    const existingGroup = await first<
+      Pick<DbCategoryGroup, 'id' | 'name' | 'hidden'>
+    >(
+      `SELECT id, name, hidden FROM category_groups WHERE UPPER(name) = ? AND id != ? AND tombstone = 0 LIMIT 1`,
+      [group.name.toUpperCase(), group.id],
     );
+    if (existingGroup) {
+      throw new Error(
+        `A ${
+          existingGroup.hidden ? 'hidden ' : ''
+        }'${existingGroup.name}' category group already exists.`,
+      );
+    }
   }
   group = categoryGroupModel.validate(group, { update: true });
   return update('category_groups', group);
@@ -756,6 +766,7 @@ export function deleteAccount(account) {
 export async function moveAccount(
   id: DbAccount['id'],
   targetId: DbAccount['id'] | null,
+  accountGroupId?: DbAccountGroup['id'] | null,
 ) {
   const account = await first<DbAccount>(
     'SELECT * FROM accounts WHERE id = ?',
@@ -778,7 +789,95 @@ export async function moveAccount(
     for (const info of updates) {
       void update('accounts', info);
     }
-    void update('accounts', { id, sort_order });
+    void update('accounts', {
+      id,
+      sort_order,
+      ...(accountGroupId !== undefined && {
+        account_group_id: accountGroupId,
+      }),
+    });
+  });
+}
+
+export function getAccountGroups() {
+  return all<DbAccountGroup>(
+    `SELECT * FROM account_groups WHERE tombstone = 0 ORDER BY sort_order, id`,
+  );
+}
+
+export async function insertAccountGroup(
+  group: WithRequired<Partial<DbAccountGroup>, 'name'>,
+): Promise<DbAccountGroup['id']> {
+  // Don't allow duplicate group
+  const existingGroup = await first<Pick<DbAccountGroup, 'id' | 'name'>>(
+    `SELECT id, name FROM account_groups WHERE UPPER(name) = ? AND tombstone = 0 LIMIT 1`,
+    [group.name.toUpperCase()],
+  );
+  if (existingGroup) {
+    throw new Error(`An '${existingGroup.name}' account group already exists.`);
+  }
+
+  const lastGroup = await first<Pick<DbAccountGroup, 'sort_order'>>(`
+    SELECT sort_order FROM account_groups WHERE tombstone = 0 ORDER BY sort_order DESC, id DESC LIMIT 1
+  `);
+  const sort_order = (lastGroup ? lastGroup.sort_order : 0) + SORT_INCREMENT;
+
+  group = {
+    ...accountGroupModel.validate(group),
+    sort_order,
+  };
+  const id: DbAccountGroup['id'] = await insertWithUUID(
+    'account_groups',
+    group,
+  );
+  return id;
+}
+
+export async function updateAccountGroup(
+  group: WithRequired<Partial<DbAccountGroup>, 'id' | 'name'>,
+) {
+  const existingGroup = await first<Pick<DbAccountGroup, 'id' | 'name'>>(
+    `SELECT id, name FROM account_groups WHERE UPPER(name) = ? AND id != ? AND tombstone = 0 LIMIT 1`,
+    [group.name.toUpperCase(), group.id],
+  );
+  if (existingGroup) {
+    throw new Error(`An '${existingGroup.name}' account group already exists.`);
+  }
+  group = accountGroupModel.validate(group, { update: true });
+  return update('account_groups', group);
+}
+
+export async function moveAccountGroup(
+  id: DbAccountGroup['id'],
+  targetId?: DbAccountGroup['id'] | null,
+) {
+  const groups = await all<Pick<DbAccountGroup, 'id' | 'sort_order'>>(
+    `SELECT id, sort_order FROM account_groups WHERE tombstone = 0 ORDER BY sort_order, id`,
+  );
+
+  const { updates, sort_order } = shoveSortOrders(groups, targetId);
+  await batchMessages(async () => {
+    for (const info of updates) {
+      await update('account_groups', info);
+    }
+    await update('account_groups', { id, sort_order });
+  });
+}
+
+export async function deleteAccountGroup(group: Pick<DbAccountGroup, 'id'>) {
+  const accounts = await all<Pick<DbAccount, 'id'>>(
+    `SELECT id FROM accounts WHERE account_group_id = ? AND tombstone = 0`,
+    [group.id],
+  );
+
+  // Clearing member refs is best-effort under CRDT sync: a concurrent
+  // assignment on another device can win against these nulls, so consumers
+  // must always treat a ref to a missing/tombstoned group as ungrouped.
+  await batchMessages(async () => {
+    for (const account of accounts) {
+      await update('accounts', { id: account.id, account_group_id: null });
+    }
+    await delete_('account_groups', group.id);
   });
 }
 
@@ -897,6 +996,43 @@ export async function moveTransaction(
 }
 
 /**
+ * Move a schedule to a new position among all non-tombstoned schedules.
+ * Uses the same midpoint/shove algorithm as transaction reordering.
+ *
+ * @param id - The ID of the schedule to move
+ * @param targetId - The ID of the schedule to place AFTER, or null to place at top
+ */
+export async function moveSchedule(id: string, targetId: string | null) {
+  await batchMessages(async () => {
+    const schedule = await first<{ id: string }>(
+      'SELECT id FROM schedules WHERE id = ? AND tombstone = 0',
+      [id],
+    );
+    if (!schedule) {
+      throw new Error(`Schedule not found: ${id}`);
+    }
+
+    const schedules = await all<{ id: string; sort_order: number }>(
+      `SELECT id, sort_order FROM schedules
+       WHERE tombstone = 0
+       ORDER BY sort_order DESC, id`,
+    );
+
+    const { sort_order: newSortOrder, updates } = shoveSortOrdersDescending(
+      schedules,
+      targetId,
+      id,
+    );
+
+    for (const info of updates) {
+      await update('schedules', info);
+    }
+
+    await update('schedules', { id, sort_order: newSortOrder });
+  });
+}
+
+/**
  * Update sort_order of child/subtransactions to maintain relative ordering.
  * Children are distributed evenly between the parent's sort_order and the
  * next sibling's sort_order to avoid collisions.
@@ -961,7 +1097,7 @@ function toSqlQueryParameters(params: unknown[]) {
 
 export function getTags() {
   return all<DbTag>(`
-    SELECT id, tag, color, description
+    SELECT id, tag, color, description, hidden
     FROM tags
     WHERE tombstone = 0
   `);
@@ -969,27 +1105,29 @@ export function getTags() {
 
 export function getAllTags() {
   return all<DbTag>(`
-    SELECT id, tag, color, description
+    SELECT id, tag, color, description, hidden
     FROM tags
   `);
 }
 
-export function insertTag(tag): Promise<DbTag['id']> {
+export function insertTag(
+  tag: Omit<DbTag, 'id' | 'tombstone'>,
+): Promise<DbTag['id']> {
   return insertWithUUID('tags', tag);
 }
 
-export async function deleteTag(tag) {
+export async function deleteTag(tag: Pick<DbTag, 'id'>) {
   return delete_('tags', tag.id);
 }
 
-export function updateTag(tag) {
+export function updateTag(tag: Partial<DbTag> & Pick<DbTag, 'id'>) {
   return update('tags', tag);
 }
 
 export function findTags() {
-  return all<{ notes: string }>(
+  return all<{ id: DbTransaction['id']; notes: string }>(
     `
-      SELECT notes
+      SELECT id, notes
       FROM transactions
       WHERE tombstone = 0 AND notes LIKE ?
     `,

@@ -1,3 +1,4 @@
+import * as argon2 from 'argon2';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -5,20 +6,48 @@ import { clearExpiredSessions, getAccountDb } from '#account-db';
 import { config } from '#load-config';
 import { TOKEN_EXPIRATION_NEVER } from '#util/validate-user';
 
-function isValidPassword(password) {
-  return password != null && password !== '';
+// https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id
+const ARGON2_OPTIONS = {
+  type: argon2.argon2id,
+  memoryCost: 47104,
+  timeCost: 1,
+  parallelism: 1,
+};
+
+export function isValidPassword(password) {
+  return typeof password === 'string' && password.length > 0;
 }
 
-function hashPassword(password) {
-  return bcrypt.hashSync(password, 12);
-}
-
-export function bootstrapPassword(password) {
+export function hashPassword(password) {
   if (!isValidPassword(password)) {
-    return { error: 'invalid-password' };
+    throw new TypeError('invalid-password');
+  }
+  return argon2.hash(password, ARGON2_OPTIONS);
+}
+
+export async function verifyPassword(password, hash) {
+  if (!isValidPassword(password) || typeof hash !== 'string') return false;
+
+  if (hash.startsWith('$argon2')) {
+    try {
+      return await argon2.verify(hash, password);
+    } catch {
+      return false;
+    }
   }
 
-  const hashed = hashPassword(password);
+  try {
+    return await bcrypt.compare(password, hash);
+  } catch {
+    return false;
+  }
+}
+
+function isLegacyHash(hash) {
+  return typeof hash === 'string' && !hash.startsWith('$argon2');
+}
+
+export function setPasswordHash(hashed) {
   const accountDb = getAccountDb();
   accountDb.transaction(() => {
     accountDb.mutate('DELETE FROM auth WHERE method = ?', ['password']);
@@ -28,11 +57,20 @@ export function bootstrapPassword(password) {
       [hashed],
     );
   });
+}
+
+export async function bootstrapPassword(password) {
+  if (!isValidPassword(password)) {
+    return { error: 'invalid-password' };
+  }
+
+  const hashed = await hashPassword(password);
+  setPasswordHash(hashed);
 
   return {};
 }
 
-export function loginWithPassword(password) {
+export async function loginWithPassword(password) {
   if (!isValidPassword(password)) {
     return { error: 'invalid-password' };
   }
@@ -47,84 +85,115 @@ export function loginWithPassword(password) {
     return { error: 'invalid-password' };
   }
 
-  const confirmed = bcrypt.compareSync(password, passwordHash);
+  const confirmed = await verifyPassword(password, passwordHash);
 
   if (!confirmed) {
     return { error: 'invalid-password' };
   }
 
-  const sessionRow = accountDb.first(
-    'SELECT * FROM sessions WHERE auth_method = ?',
-    ['password'],
-  );
+  const rehashed = isLegacyHash(passwordHash)
+    ? await hashPassword(password)
+    : null;
 
-  const token = sessionRow ? sessionRow.token : uuidv4();
-
-  const { totalOfUsers } = accountDb.first(
-    'SELECT count(*) as totalOfUsers FROM users',
-  );
-  let userId = null;
-  if (totalOfUsers === 0) {
-    userId = uuidv4();
-    accountDb.mutate(
-      'INSERT INTO users (id, user_name, display_name, enabled, owner, role) VALUES (?, ?, ?, 1, 1, ?)',
-      [userId, '', '', 'ADMIN'],
+  return accountDb.transaction(() => {
+    // Password verification yields to other requests. A reset must also
+    // invalidate logins that were still verifying the previous password.
+    const currentAuth = accountDb.first(
+      "SELECT extra_data FROM auth WHERE method = 'password'",
     );
-  } else {
-    const { id: userIdFromDb } = accountDb.first(
-      'SELECT id FROM users WHERE user_name = ?',
-      [''],
-    );
-
-    userId = userIdFromDb;
-
-    if (!userId) {
-      return { error: 'user-not-found' };
+    if (currentAuth?.extra_data !== passwordHash) {
+      return { error: 'invalid-password' };
     }
-  }
+    if (rehashed) {
+      accountDb.mutate(
+        "UPDATE auth SET extra_data = ? WHERE method = 'password'",
+        [rehashed],
+      );
+    }
 
-  let expiration = TOKEN_EXPIRATION_NEVER;
-  if (
-    config.get('token_expiration') !== 'never' &&
-    config.get('token_expiration') !== 'openid-provider' &&
-    typeof config.get('token_expiration') === 'number'
-  ) {
-    expiration =
-      Math.floor(Date.now() / 1000) + config.get('token_expiration') * 60;
-  }
+    const { totalOfUsers } = accountDb.first(
+      'SELECT count(*) as totalOfUsers FROM users',
+    );
+    let userId = null;
+    if (totalOfUsers === 0) {
+      userId = uuidv4();
+      accountDb.mutate(
+        'INSERT INTO users (id, user_name, display_name, enabled, owner, role) VALUES (?, ?, ?, 1, 1, ?)',
+        [userId, '', '', 'ADMIN'],
+      );
+    } else {
+      const { id: userIdFromDb } = accountDb.first(
+        'SELECT id FROM users WHERE user_name = ?',
+        [''],
+      );
 
-  if (!sessionRow) {
+      userId = userIdFromDb;
+
+      if (!userId) {
+        return { error: 'user-not-found' };
+      }
+    }
+
+    let expiration = TOKEN_EXPIRATION_NEVER;
+    if (
+      config.get('token_expiration') !== 'never' &&
+      config.get('token_expiration') !== 'openid-provider' &&
+      typeof config.get('token_expiration') === 'number'
+    ) {
+      expiration =
+        Math.floor(Date.now() / 1000) + config.get('token_expiration') * 60;
+    }
+    const token = uuidv4();
     accountDb.mutate(
       'INSERT INTO sessions (token, expires_at, user_id, auth_method) VALUES (?, ?, ?, ?)',
       [token, expiration, userId, 'password'],
     );
-  } else {
-    accountDb.mutate(
-      'UPDATE sessions SET user_id = ?, expires_at = ? WHERE token = ?',
-      [userId, expiration, token],
-    );
-  }
-
-  clearExpiredSessions();
-
-  return { token };
+    clearExpiredSessions();
+    return { token };
+  });
 }
 
-export function changePassword(newPassword) {
+export async function changePassword(newPassword, currentPassword) {
   const accountDb = getAccountDb();
 
   if (!isValidPassword(newPassword)) {
     return { error: 'invalid-password' };
   }
 
-  const hashed = hashPassword(newPassword);
-  accountDb.mutate("UPDATE auth SET extra_data = ? WHERE method = 'password'", [
-    hashed,
-  ]);
-  return {};
+  const auth = accountDb.first(
+    "SELECT extra_data FROM auth WHERE method = 'password'",
+  );
+  if (!auth) {
+    return { error: 'no-password-method' };
+  }
+  if (
+    currentPassword !== undefined &&
+    !(await verifyPassword(currentPassword, auth.extra_data))
+  ) {
+    return { error: 'invalid-current-password' };
+  }
+  const hashed = await hashPassword(newPassword);
+  return accountDb.transaction(() => {
+    if (
+      currentPassword !== undefined &&
+      accountDb.first("SELECT extra_data FROM auth WHERE method = 'password'")
+        ?.extra_data !== auth.extra_data
+    ) {
+      return { error: 'invalid-current-password' };
+    }
+    const result = accountDb.mutate(
+      "UPDATE auth SET extra_data = ? WHERE method = 'password'",
+      [hashed],
+    );
+    if (result.changes === 0) {
+      return { error: 'no-password-method' };
+    }
+    accountDb.mutate("DELETE FROM sessions WHERE auth_method = 'password'");
+    return {};
+  });
 }
 
-export function checkPassword(password) {
+export async function checkPassword(password) {
   if (!isValidPassword(password)) {
     return false;
   }
@@ -139,11 +208,5 @@ export function checkPassword(password) {
     return false;
   }
 
-  const confirmed = bcrypt.compareSync(password, passwordHash);
-
-  if (!confirmed) {
-    return false;
-  }
-
-  return true;
+  return await verifyPassword(password, passwordHash);
 }

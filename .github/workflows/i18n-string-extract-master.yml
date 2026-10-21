@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   extract-and-upload-i18n-strings:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     environment: i18n
     if: github.repository == 'actualbudget/actual'
     steps:
@@ -43,6 +43,11 @@ jobs:
           cat > "$HOME/.config/weblate" <<EOF
           [keys]
           https://hosted.weblate.org/api/ = ${WEBLATE_API_KEY}
+          [weblate]
+          retries = 5
+          status_forcelist = 423
+          allowed_methods = POST
+          backoff_factor = 5
           EOF
 
       - name: Lock translations

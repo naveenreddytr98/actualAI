@@ -6,20 +6,27 @@ export class CategoryMenuModal {
   readonly page: Page;
   readonly locator: Locator;
   readonly heading: Locator;
-  readonly budgetAmountInput: Locator;
   readonly editNotesButton: Locator;
+  readonly budgetAutomationsButton: Locator;
+  readonly deleteButton: Locator;
 
   constructor(locator: Locator) {
     this.locator = locator;
     this.page = locator.page();
 
     this.heading = locator.getByRole('heading');
-    this.budgetAmountInput = locator.getByTestId('amount-input');
     this.editNotesButton = locator.getByRole('button', { name: 'Edit notes' });
+    this.budgetAutomationsButton = locator.getByRole('button', {
+      name: 'Budget automations',
+    });
+    this.deleteButton = locator.getByRole('button', {
+      name: 'Delete',
+      exact: true,
+    });
   }
 
   async close() {
-    await this.heading.getByRole('button', { name: 'Close' }).click();
+    await this.page.keyboard.press('Escape');
   }
 
   async editNotes() {
@@ -30,5 +37,15 @@ export class CategoryMenuModal {
         name: 'Modal dialog',
       }),
     );
+  }
+
+  async editAutomations() {
+    await this.budgetAutomationsButton.click();
+
+    return this.page.getByRole('dialog', { name: 'Modal dialog' });
+  }
+
+  async delete() {
+    await this.deleteButton.click();
   }
 }

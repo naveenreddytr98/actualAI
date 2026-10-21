@@ -1,4 +1,6 @@
 export type * from './account';
+export type * from './account-group';
+export type * from './akahu';
 export type * from './bank';
 export type * from './bank-sync';
 export type * from './category';

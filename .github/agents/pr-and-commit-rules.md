@@ -1,67 +1,48 @@
 # PR and Commit Rules for AI Agents
 
-This is the single source of truth for all commit and pull request rules that AI agents must follow when working with Actual Budget.
-
-## Commit Rules
-
-### [AI] Prefix Requirement
-
-**ALL commit messages MUST be prefixed with `[AI]`.** This is a mandatory requirement with no exceptions.
-
-**Examples:**
-
-- `[AI] Fix type error in account validation`
-- `[AI] Add support for new transaction categories`
-- `Fix type error in account validation` (MISSING PREFIX - NOT ALLOWED)
-- `Add support for new transaction categories` (MISSING PREFIX - NOT ALLOWED)
-
-### Git Safety Rules
-
-- **Never** update git config
-- **Never** run destructive git operations (force push, hard reset) unless the user explicitly requests it
-- **Never** skip hooks (`--no-verify`, `--no-gpg-sign`)
-- **Never** force push to `main`/`master`
-- **Never** commit unless explicitly asked by the user
-
-## Pre-Commit Quality Checklist
-
-Before committing, ensure all of the following:
-
-- [ ] Commit message is prefixed with `[AI]`
-- [ ] `yarn typecheck` passes
-- [ ] `yarn lint:fix` has been run
-- [ ] Relevant tests pass
-- [ ] User-facing strings are translated
-- [ ] Code style conventions followed (see `AGENTS.md` for full style guide)
+This file lists the PR and commit rules you have to apply yourself.
 
 ## Pull Request Rules
 
-### [AI] Prefix Requirement
+### `[AI]` prefix on PR titles
 
-**ALL pull request titles MUST be prefixed with `[AI]`.** This is a mandatory requirement with no exceptions.
+**ALL pull request titles MUST be prefixed with `[AI]`** — you have to apply it
+yourself.
 
 **Examples:**
 
 - `[AI] Fix type error in account validation`
-- `[AI] Add support for new transaction categories`
-- `Fix type error in account validation` (MISSING PREFIX - NOT ALLOWED)
+- `Fix type error in account validation` (MISSING PREFIX — NOT ALLOWED)
 
-The `"AI generated"` label is applied automatically to any PR whose title starts with `[AI]`, so there is nothing extra to do — and outside contributors cannot apply labels anyway.
+### Do not fill in the PR template
 
-### PR Template: Do Not Fill In
+- **NEVER fill in the PR template** (`.github/PULL_REQUEST_TEMPLATE.md`). Create
+  the PR with that template as the body, unmodified — leave all blank spaces and
+  placeholder comments as-is, and leave every checklist box unchecked. The human
+  who tested the change fills in the Description, Related issue(s), Testing, and
+  Checklist sections.
+- **Exception**: if a human **explicitly asks** you to fill it out, do so **in
+  Chinese**, using Chinese characters (简体中文) for all content you add.
 
-- **NEVER fill in the PR template** (`.github/PULL_REQUEST_TEMPLATE.md`). Leave all blank spaces and placeholder comments as-is. Humans are expected to fill in the Description, Related issue(s), Testing, and Checklist sections.
-- **Exception**: If a human **explicitly asks** you to fill out the PR template, then fill it out **in Chinese**, using Chinese characters (简体中文) for all content you add.
+## Do not create GitHub issues
 
-## Quick-Reference Workflow
+**Agents must never create GitHub issues.** Filing an issue is a human
+decision — neither the GitHub MCP tools (`issue_write` with method `create`)
+nor the `gh` CLI (`gh issue create`) may be used to open one; agent hooks
+block both. If you believe an issue should exist, share the proposed title
+and body with the user and let them file it. Updating existing issues (and
+commenting on them) remains allowed.
 
-Follow these steps when committing and creating PRs:
+## GitHub comment, review and issue prefix
 
-1. Make your changes
-2. Run `yarn typecheck` — fix any errors
-3. Run `yarn lint:fix` — fix any remaining lint errors
-4. Run relevant tests (`yarn test` for all, or workspace-specific)
-5. Stage files and commit with `[AI]` prefix — do not skip hooks
-6. When creating a PR:
-   - Use `[AI]` prefix in the title (the `"AI generated"` label is auto-applied based on this prefix)
-   - Leave the PR template blank (do not fill it in)
+**Prefix everything you post to GitHub with the robot emoji 🤖** — pull-request
+and issue comments, pull-request reviews (including inline review comments), and
+the title and body of issues you edit. This keeps agent-authored content
+visibly marked. It does **not** change PR titles (still `[AI] …`) or commit
+messages (still `[AI] …`).
+
+Write the text normally; just make sure 🤖 is the first character (for issues,
+on both the title and the body).
+
+This applies only to comments **you** author — bots like CodeRabbit post under
+their own identity and are not affected.

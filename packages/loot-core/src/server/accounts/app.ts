@@ -1,4 +1,3 @@
-import { t } from 'i18next';
 import { v4 as uuidv4 } from 'uuid';
 
 import { captureException } from '#platform/exceptions';
@@ -15,7 +14,8 @@ import {
 } from '#server/errors';
 import { app as mainApp } from '#server/main-app';
 import { mutator } from '#server/mutators';
-import { get, post } from '#server/post';
+import { del, get, post } from '#server/post';
+import { getPrefs } from '#server/prefs';
 import { getServer } from '#server/server-config';
 import { batchMessages } from '#server/sync';
 import { undoable, withUndo } from '#server/undo';
@@ -26,9 +26,13 @@ import { amountToInteger } from '#shared/util';
 import type { ImportTransactionsOpts } from '#types/api-handlers';
 import type {
   AccountEntity,
+  AccountGroupEntity,
+  BankSyncProviderStatus,
+  BankSyncStatus,
   CategoryEntity,
   GoCardlessToken,
   ImportTransactionEntity,
+  SyncServerAkahuAccount,
   SyncServerEnableBankingAccount,
   SyncServerGoCardlessAccount,
   SyncServerPluggyAiAccount,
@@ -56,6 +60,7 @@ export type AccountHandlers = {
   'gocardless-accounts-link': typeof linkGoCardlessAccount;
   'simplefin-accounts-link': typeof linkSimpleFinAccount;
   'pluggyai-accounts-link': typeof linkPluggyAiAccount;
+  'akahu-accounts-link': typeof linkAkahuAccount;
   'enablebanking-accounts-link': typeof linkEnableBankingAccount;
   'account-create': typeof createAccount;
   'account-close': typeof closeAccount;
@@ -68,6 +73,7 @@ export type AccountHandlers = {
   'gocardless-status': typeof goCardlessStatus;
   'simplefin-status': typeof simpleFinStatus;
   'pluggyai-status': typeof pluggyAiStatus;
+  'akahu-status': typeof akahuStatus;
   'enablebanking-status': typeof enableBankingStatus;
   'enablebanking-aspsps': typeof enableBankingAspsps;
   'enablebanking-start-auth': typeof enableBankingStartAuth;
@@ -77,6 +83,7 @@ export type AccountHandlers = {
   'enablebanking-configure': typeof enableBankingConfigure;
   'simplefin-accounts': typeof simpleFinAccounts;
   'pluggyai-accounts': typeof pluggyAiAccounts;
+  'akahu-accounts': typeof akahuAccounts;
   'gocardless-get-banks': typeof getGoCardlessBanks;
   'gocardless-create-web-token': typeof createGoCardlessWebToken;
   'accounts-bank-sync': typeof accountsBankSync;
@@ -89,12 +96,16 @@ async function updateAccount({
   id,
   name,
   last_reconciled,
-}: Pick<AccountEntity, 'id' | 'name'> &
-  Partial<Pick<AccountEntity, 'last_reconciled'>>) {
+  account_group_id,
+}: Pick<AccountEntity, 'id'> &
+  Partial<
+    Pick<AccountEntity, 'name' | 'last_reconciled' | 'account_group_id'>
+  >) {
   await db.update('accounts', {
     id,
-    name,
+    ...(name !== undefined && { name }),
     ...(last_reconciled && { last_reconciled }),
+    ...(account_group_id !== undefined && { account_group_id }),
   });
   return {};
 }
@@ -122,6 +133,8 @@ async function getAccounts(): Promise<AccountEntity[]> {
         balance_limit: dbAccount.balance_limit ?? null,
         account_sync_source: dbAccount.account_sync_source ?? null,
         last_sync: dbAccount.last_sync ?? null,
+        bank_sync_status: dbAccount.bank_sync_status ?? null,
+        account_group_id: dbAccount.account_group_id ?? null,
       }) satisfies AccountEntity,
   );
 }
@@ -219,7 +232,7 @@ async function linkGoCardlessAccount({
 
   connection.send('sync-event', {
     type: 'success',
-    tables: ['transactions'],
+    tables: ['transactions', 'accounts'],
   });
 
   return 'ok';
@@ -237,7 +250,10 @@ async function linkSimpleFinAccount({
   let id;
 
   const institution = {
-    name: externalAccount.institution ?? t('Unknown'),
+    // Persist a null name when the provider doesn't report an institution, so
+    // the desktop-client can render a localized fallback instead of baking an
+    // English string into shared bank data.
+    name: externalAccount.institution ?? null,
   };
 
   const bank = await link.findOrCreateBank(
@@ -293,7 +309,7 @@ async function linkSimpleFinAccount({
 
   connection.send('sync-event', {
     type: 'success',
-    tables: ['transactions'],
+    tables: ['transactions', 'accounts'],
   });
 
   return 'ok';
@@ -309,9 +325,13 @@ async function linkPluggyAiAccount({
   externalAccount: SyncServerPluggyAiAccount;
 }) {
   let id;
+  const fileId = getPrefs()?.cloudFileId;
 
   const institution = {
-    name: externalAccount.institution ?? t('Unknown'),
+    // Persist a null name when the provider doesn't report an institution, so
+    // the desktop-client can render a localized fallback instead of baking an
+    // English string into shared bank data.
+    name: externalAccount.institution ?? null,
   };
 
   const bank = await link.findOrCreateBank(
@@ -346,6 +366,81 @@ async function linkPluggyAiAccount({
       bank: bank.id,
       offbudget: offBudget ? 1 : 0,
       account_sync_source: 'pluggyai',
+    });
+    await db.insertPayee({
+      name: '',
+      transfer_acct: id,
+    });
+  }
+
+  const syncRes = await bankSync.syncAccount(
+    undefined,
+    undefined,
+    id,
+    externalAccount.account_id,
+    bank.bank_id,
+    startingDate,
+    startingBalance,
+    fileId,
+  );
+
+  await handleSyncResponse(syncRes, id);
+
+  connection.send('sync-event', {
+    type: 'success',
+    tables: ['transactions', 'accounts'],
+  });
+
+  return 'ok';
+}
+
+async function linkAkahuAccount({
+  externalAccount,
+  upgradingId,
+  offBudget = false,
+  startingDate,
+  startingBalance,
+}: LinkAccountBaseParams & {
+  externalAccount: SyncServerAkahuAccount;
+}) {
+  let id;
+
+  const institution = {
+    name: externalAccount.institution ?? null,
+  };
+
+  const bank = await link.findOrCreateBank(
+    institution,
+    externalAccount.orgDomain ?? externalAccount.orgId,
+  );
+
+  if (upgradingId) {
+    const accRow = await db.first<db.DbAccount>(
+      'SELECT * FROM accounts WHERE id = ?',
+      [upgradingId],
+    );
+
+    if (!accRow) {
+      throw new Error(`Account with ID ${upgradingId} not found.`);
+    }
+
+    id = accRow.id;
+    await db.update('accounts', {
+      id,
+      account_id: externalAccount.account_id,
+      bank: bank.id,
+      account_sync_source: 'akahu',
+    });
+  } else {
+    id = uuidv4();
+    await db.insertWithUUID('accounts', {
+      id,
+      account_id: externalAccount.account_id,
+      name: externalAccount.name,
+      official_name: externalAccount.name,
+      bank: bank.id,
+      offbudget: offBudget ? 1 : 0,
+      account_sync_source: 'akahu',
     });
     await db.insertPayee({
       name: '',
@@ -385,7 +480,10 @@ async function linkEnableBankingAccount({
   let id: string | undefined;
 
   const institution = {
-    name: externalAccount.institution ?? t('Unknown'),
+    // Persist a null name when the provider doesn't report an institution, so
+    // the desktop-client can render a localized fallback instead of baking an
+    // English string into shared bank data.
+    name: externalAccount.institution ?? null,
   };
 
   // Enable Banking uses a session-per-account model, so we use the
@@ -449,7 +547,7 @@ async function linkEnableBankingAccount({
 
   connection.send('sync-event', {
     type: 'success',
-    tables: ['transactions'],
+    tables: ['transactions', 'accounts'],
   });
 
   return 'ok';
@@ -613,19 +711,23 @@ async function reopenAccount({ id }: { id: AccountEntity['id'] }) {
 async function moveAccount({
   id,
   targetId,
+  accountGroupId,
 }: {
   id: AccountEntity['id'];
   targetId: AccountEntity['id'] | null;
+  accountGroupId?: AccountGroupEntity['id'] | null;
 }) {
-  await db.moveAccount(id, targetId);
+  await db.moveAccount(id, targetId, accountGroupId);
 }
 
 async function setSecret({
   name,
   value,
+  fileId = null,
 }: {
   name: string;
   value: string | null;
+  fileId?: string | null;
 }) {
   const userToken = await asyncStorage.getItem('user-token');
 
@@ -638,16 +740,27 @@ async function setSecret({
     throw new Error('Failed to get server config.');
   }
 
+  const headers = {
+    'X-ACTUAL-TOKEN': userToken,
+    ...(fileId ? { 'X-Actual-File-Id': fileId } : {}),
+  };
+
   try {
+    if (value === null) {
+      return await del(
+        serverConfig.BASE_SERVER + '/secret/' + name,
+        {},
+        headers,
+      );
+    }
+
     return await post(
       serverConfig.BASE_SERVER + '/secret',
       {
         name,
         value,
       },
-      {
-        'X-ACTUAL-TOKEN': userToken,
-      },
+      headers,
     );
   } catch (error) {
     return {
@@ -802,7 +915,30 @@ async function simpleFinStatus() {
   );
 }
 
-async function pluggyAiStatus() {
+async function pluggyAiStatus(): Promise<BankSyncProviderStatus> {
+  const userToken = await asyncStorage.getItem('user-token');
+
+  if (!userToken) {
+    return { error: 'unauthorized' };
+  }
+
+  const serverConfig = getServer();
+  if (!serverConfig) {
+    throw new Error('Failed to get server config.');
+  }
+
+  const fileId = getPrefs()?.cloudFileId;
+  return post(
+    serverConfig.PLUGGYAI_SERVER + '/status',
+    {},
+    {
+      'X-ACTUAL-TOKEN': userToken,
+      ...(fileId ? { 'X-Actual-File-Id': fileId } : {}),
+    },
+  );
+}
+
+async function akahuStatus() {
   const userToken = await asyncStorage.getItem('user-token');
 
   if (!userToken) {
@@ -815,7 +951,7 @@ async function pluggyAiStatus() {
   }
 
   return post(
-    serverConfig.PLUGGYAI_SERVER + '/status',
+    serverConfig.AKAHU_SERVER + '/status',
     {},
     {
       'X-ACTUAL-TOKEN': userToken,
@@ -862,8 +998,36 @@ async function pluggyAiAccounts() {
   }
 
   try {
+    const fileId = getPrefs()?.cloudFileId;
     return await post(
       serverConfig.PLUGGYAI_SERVER + '/accounts',
+      {},
+      {
+        'X-ACTUAL-TOKEN': userToken,
+        ...(fileId ? { 'X-Actual-File-Id': fileId } : {}),
+      },
+      60000,
+    );
+  } catch {
+    return { error_code: 'TIMED_OUT' };
+  }
+}
+
+async function akahuAccounts() {
+  const userToken = await asyncStorage.getItem('user-token');
+
+  if (!userToken) {
+    return { error: 'unauthorized' };
+  }
+
+  const serverConfig = getServer();
+  if (!serverConfig) {
+    throw new Error('Failed to get server config.');
+  }
+
+  try {
+    return await post(
+      serverConfig.AKAHU_SERVER + '/accounts',
       {},
       {
         'X-ACTUAL-TOKEN': userToken,
@@ -922,11 +1086,13 @@ async function enableBankingStartAuth({
   country,
   redirectUrl,
   maxConsentValidity,
+  psuType = 'personal',
 }: {
   aspspId: string;
   country: string;
   redirectUrl: string;
   maxConsentValidity?: number;
+  psuType?: 'personal' | 'business';
 }) {
   const userToken = await asyncStorage.getItem('user-token');
 
@@ -951,7 +1117,12 @@ async function enableBankingStartAuth({
 
   return post(
     serverConfig.ENABLEBANKING_SERVER + '/start-auth',
-    { aspsp: { name: aspspId, country }, redirectUrl, maxConsentValidity },
+    {
+      aspsp: { name: aspspId, country },
+      redirectUrl,
+      maxConsentValidity,
+      psuType,
+    },
     {
       'X-ACTUAL-TOKEN': userToken,
     },
@@ -1108,7 +1279,7 @@ async function createGoCardlessWebToken({
   }
 }
 
-type SyncResponse = {
+export type SyncResponse = {
   newTransactions: Array<TransactionEntity['id']>;
   matchedTransactions: Array<TransactionEntity['id']>;
   updatedAccounts: Array<AccountEntity['id']>;
@@ -1134,7 +1305,11 @@ async function handleSyncResponse(
   }
 
   const ts = new Date().getTime().toString();
-  await db.update('accounts', { id: acctId, last_sync: ts });
+  await db.update('accounts', {
+    id: acctId,
+    last_sync: ts,
+    bank_sync_status: 'ok',
+  });
 
   return {
     newTransactions,
@@ -1214,6 +1389,58 @@ function handleSyncError(
   };
 }
 
+function getBankSyncStatusFromError(
+  err: Error | PostError | BankSyncError,
+): BankSyncStatus {
+  if (isBankSyncError(err)) {
+    if (
+      (err.category === 'ITEM_ERROR' && err.code === 'ITEM_LOGIN_REQUIRED') ||
+      (err.category === 'INVALID_INPUT' &&
+        err.code === 'INVALID_ACCESS_TOKEN') ||
+      err.category === 'INVALID_ACCESS_TOKEN'
+    ) {
+      return 'reauth-required';
+    }
+
+    if (err.category === 'ACCOUNT_NEEDS_ATTENTION') {
+      return 'attention-required';
+    }
+
+    if (err.category === 'RATE_LIMIT_EXCEEDED') {
+      return 'rate-limit-exceeded';
+    }
+
+    if (err.category === 'TIMED_OUT') {
+      return 'timed-out';
+    }
+
+    if (err.category === 'ACCOUNT_MISSING') {
+      return 'account-missing';
+    }
+
+    if (
+      err.category === 'GOCARDLESS_NOT_CONFIGURED' ||
+      err.category === 'NOT_CONFIGURED' ||
+      err.code === 'GOCARDLESS_NOT_CONFIGURED' ||
+      err.code === 'NOT_CONFIGURED'
+    ) {
+      return 'not-configured';
+    }
+  }
+
+  return 'failed';
+}
+
+function persistBankSyncError(
+  accountId: AccountEntity['id'],
+  err: Error | PostError | BankSyncError,
+) {
+  return db.update('accounts', {
+    id: accountId,
+    bank_sync_status: getBankSyncStatusFromError(err),
+  });
+}
+
 export type SyncResponseWithErrors = SyncResponse & {
   errors: SyncError[];
 };
@@ -1243,6 +1470,7 @@ async function accountsBankSync({
   const newTransactions: Array<TransactionEntity['id']> = [];
   const matchedTransactions: Array<TransactionEntity['id']> = [];
   const updatedAccounts: Array<AccountEntity['id']> = [];
+  const fileId = getPrefs()?.cloudFileId;
 
   for (const acct of accounts) {
     if (acct.bankId && acct.account_id) {
@@ -1254,6 +1482,9 @@ async function accountsBankSync({
           acct.id,
           acct.account_id,
           acct.bankId,
+          undefined,
+          undefined,
+          fileId,
         );
 
         const syncResponseData = await handleSyncResponse(
@@ -1266,6 +1497,7 @@ async function accountsBankSync({
         updatedAccounts.push(...syncResponseData.updatedAccounts);
       } catch (err) {
         const error = err as Error;
+        await persistBankSyncError(acct.id, error);
         errors.push(handleSyncError(error, acct));
         captureException({
           ...error,
@@ -1280,7 +1512,7 @@ async function accountsBankSync({
   if (updatedAccounts.length > 0) {
     connection.send('sync-event', {
       type: 'success',
-      tables: ['transactions'],
+      tables: ['transactions', 'accounts'],
     });
   }
 
@@ -1348,17 +1580,15 @@ async function simpleFinBatchSync({
       const updatedAccounts: Array<AccountEntity['id']> = [];
 
       if (syncResponse.res?.error_code) {
-        errors.push(
-          handleSyncError(
-            {
-              type: 'BankSyncError',
-              reason: 'Failed syncing account "' + account.name + '."',
-              category: syncResponse.res.error_type,
-              code: syncResponse.res.error_code,
-            } as BankSyncError,
-            account,
-          ),
-        );
+        const bankSyncError = {
+          type: 'BankSyncError',
+          reason: 'Failed syncing account "' + account.name + '."',
+          category: syncResponse.res.error_type,
+          code: syncResponse.res.error_code,
+        } as BankSyncError;
+
+        await persistBankSyncError(account.id, bankSyncError);
+        errors.push(handleSyncError(bankSyncError, account));
       } else if (syncResponse.res) {
         const syncResponseData = await handleSyncResponse(
           syncResponse.res,
@@ -1369,14 +1599,11 @@ async function simpleFinBatchSync({
         matchedTransactions.push(...syncResponseData.matchedTransactions);
         updatedAccounts.push(...syncResponseData.updatedAccounts);
       } else {
-        errors.push(
-          handleSyncError(
-            new Error(
-              'Failed syncing account "' + account.name + '": empty response',
-            ),
-            account,
-          ),
+        const emptyResponseError = new Error(
+          'Failed syncing account "' + account.name + '": empty response',
         );
+        await persistBankSyncError(account.id, emptyResponseError);
+        errors.push(handleSyncError(emptyResponseError, account));
       }
 
       retVal.push({
@@ -1387,6 +1614,7 @@ async function simpleFinBatchSync({
   } catch (err) {
     for (const account of accounts) {
       const error = err as Error;
+      await persistBankSyncError(account.id, error);
       retVal.push({
         accountId: account.id,
         res: {
@@ -1402,7 +1630,7 @@ async function simpleFinBatchSync({
   if (retVal.some(a => a.res.updatedAccounts.length > 0)) {
     connection.send('sync-event', {
       type: 'success',
-      tables: ['transactions'],
+      tables: ['transactions', 'accounts'],
     });
   }
 
@@ -1432,16 +1660,25 @@ async function importTransactions({
     throw APIError('transactions-import: accountId must be an id');
   }
 
+  const payeeNameNormalization = opts?.payeeNameNormalization ?? 'title-case';
+  if (!bankSync.PAYEE_NAME_NORMALIZATIONS.includes(payeeNameNormalization)) {
+    throw APIError(
+      `transactions-import: payeeNameNormalization must be one of ${bankSync.PAYEE_NAME_NORMALIZATIONS.join(
+        ', ',
+      )}, got '${String(payeeNameNormalization)}'`,
+    );
+  }
+
   try {
     const reconciled = await bankSync.reconcileTransactions(
       accountId,
       transactions,
-      false,
-      true,
-      isPreview,
-      opts?.defaultCleared,
-      false,
-      opts?.reimportDeleted,
+      {
+        isPreview,
+        defaultCleared: opts?.defaultCleared,
+        reimportDeleted: opts?.reimportDeleted,
+        payeeNameNormalization,
+      },
     );
     return {
       errors: [],
@@ -1489,6 +1726,7 @@ async function unlinkAccount({ id }: { id: AccountEntity['id'] }) {
     balance_available: null,
     balance_limit: null,
     account_sync_source: null,
+    bank_sync_status: null,
   });
 
   if (isGoCardless === false) {
@@ -1551,6 +1789,7 @@ app.method('account-properties', getAccountProperties);
 app.method('gocardless-accounts-link', linkGoCardlessAccount);
 app.method('simplefin-accounts-link', linkSimpleFinAccount);
 app.method('pluggyai-accounts-link', linkPluggyAiAccount);
+app.method('akahu-accounts-link', linkAkahuAccount);
 app.method('enablebanking-accounts-link', linkEnableBankingAccount);
 app.method('account-create', mutator(undoable(createAccount)));
 app.method('account-close', mutator(closeAccount));
@@ -1563,6 +1802,7 @@ app.method('gocardless-poll-web-token-stop', stopGoCardlessWebTokenPolling);
 app.method('gocardless-status', goCardlessStatus);
 app.method('simplefin-status', simpleFinStatus);
 app.method('pluggyai-status', pluggyAiStatus);
+app.method('akahu-status', akahuStatus);
 app.method('enablebanking-status', enableBankingStatus);
 app.method('enablebanking-aspsps', enableBankingAspsps);
 app.method('enablebanking-start-auth', enableBankingStartAuth);
@@ -1572,6 +1812,7 @@ app.method('enablebanking-poll-auth-stop', stopEnableBankingPollAuth);
 app.method('enablebanking-configure', enableBankingConfigure);
 app.method('simplefin-accounts', simpleFinAccounts);
 app.method('pluggyai-accounts', pluggyAiAccounts);
+app.method('akahu-accounts', akahuAccounts);
 app.method('gocardless-get-banks', getGoCardlessBanks);
 app.method('gocardless-create-web-token', createGoCardlessWebToken);
 app.method('accounts-bank-sync', accountsBankSync);

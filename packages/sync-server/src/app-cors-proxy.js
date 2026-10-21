@@ -1,10 +1,13 @@
+import createDebug from 'debug';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import ipaddr from 'ipaddr.js';
 
 import { config } from './load-config';
 import { requestLoggerMiddleware } from './util/middlewares';
+import { isBlockedIp } from './util/ssrf';
 import { validateSession } from './util/validate-user';
+
+const debugSensitive = createDebug('actual-sensitive:cors-proxy');
 
 const app = express();
 
@@ -68,20 +71,9 @@ function isUrlAllowed(targetUrl) {
     const hostname = url.hostname;
 
     // Block private/local IP addresses
-    if (ipaddr.isValid(hostname)) {
-      const ip = ipaddr.parse(hostname);
-      if (
-        [
-          'private',
-          'loopback',
-          'linkLocal',
-          'uniqueLocal',
-          'unspecified',
-        ].includes(ip.range())
-      ) {
-        console.warn(`Blocked request to private/localhost IP: ${hostname}`);
-        return false;
-      }
+    if (isBlockedIp(hostname)) {
+      console.warn(`Blocked request to private/localhost IP: ${hostname}`);
+      return false;
     }
 
     // Always allow the specific plugin-store URL
@@ -102,7 +94,8 @@ function isUrlAllowed(targetUrl) {
           targetUrl === repoUrl ||
           targetUrl.startsWith(repoUrl + '/') ||
           (hostname === 'api.github.com' &&
-            url.pathname.startsWith(`/repos/${repoOwner}/${repoName}`)) ||
+            (url.pathname === `/repos/${repoOwner}/${repoName}` ||
+              url.pathname.startsWith(`/repos/${repoOwner}/${repoName}/`))) ||
           (hostname === 'raw.githubusercontent.com' &&
             url.pathname.startsWith(`/${repoOwner}/${repoName}/`)) ||
           (hostname === 'github.com' &&
@@ -121,7 +114,8 @@ function isUrlAllowed(targetUrl) {
 
     return false;
   } catch (e) {
-    console.warn('Invalid target URL:', targetUrl, e.message);
+    console.warn('Invalid target URL');
+    debugSensitive('Invalid target URL %s: %O', targetUrl, e);
     return false;
   }
 }
@@ -168,7 +162,8 @@ app.use('/', async (req, res) => {
 
   // Check if the URL is allowed
   if (!isUrlAllowed(url.href)) {
-    console.warn('Blocked request to unauthorized URL:', url.href);
+    console.warn('Blocked request to unauthorized URL');
+    debugSensitive('Blocked request to unauthorized URL: %s', url.href);
     return res.status(403).json({
       error: 'URL not allowed',
       message:

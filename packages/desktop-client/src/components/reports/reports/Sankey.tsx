@@ -12,6 +12,7 @@ import {
   SvgRefresh,
 } from '@actual-app/components/icons/v1';
 import { Menu } from '@actual-app/components/menu';
+import { ModeButton } from '@actual-app/components/mode-button';
 import { Paragraph } from '@actual-app/components/paragraph';
 import { Popover } from '@actual-app/components/popover';
 import { SpaceBetween } from '@actual-app/components/space-between';
@@ -20,15 +21,13 @@ import { theme } from '@actual-app/components/theme';
 import { View } from '@actual-app/components/view';
 import { send } from '@actual-app/core/platform/client/connection';
 import * as monthUtils from '@actual-app/core/shared/months';
-import { mapField } from '@actual-app/core/shared/rules';
 import type {
   RuleConditionEntity,
   SankeyWidget,
   TimeFrame,
 } from '@actual-app/core/types/models';
-import * as d from 'date-fns';
+import { debounce } from 'es-toolkit/compat';
 import type { TFunction } from 'i18next';
-import debounce from 'lodash/debounce';
 import type { SankeyData } from 'recharts/types/chart/Sankey';
 
 import { EditablePageHeaderTitle } from '#components/EditablePageHeaderTitle';
@@ -37,17 +36,21 @@ import { MobilePageHeader, Page, PageHeader } from '#components/Page';
 import { SankeyGraph } from '#components/reports/graphs/SankeyGraph';
 import { Header } from '#components/reports/Header';
 import { LoadingIndicator } from '#components/reports/LoadingIndicator';
-import { ModeButton } from '#components/reports/ModeButton';
-import { calculateTimeRange } from '#components/reports/reportRanges';
+import {
+  boundMonthRangeFromDates,
+  calculateTimeRange,
+} from '#components/reports/reportRanges';
 import {
   buildSankeyData,
   createBaseGraphSpreadsheet,
   GRAPH_LAYER_ORDER,
   GraphLayers,
 } from '#components/reports/spreadsheets/sankey-spreadsheet';
-import type { Graph } from '#components/reports/spreadsheets/sankey-spreadsheet';
+import type {
+  Graph,
+  GraphLayer,
+} from '#components/reports/spreadsheets/sankey-spreadsheet';
 import { useReport } from '#components/reports/useReport';
-import { fromDateRepr } from '#components/reports/util';
 import { useCategories } from '#hooks/useCategories';
 import { useDashboardWidget } from '#hooks/useDashboardWidget';
 import { useFormatList } from '#hooks/useFormatList';
@@ -58,6 +61,7 @@ import { useRuleConditionFilters } from '#hooks/useRuleConditionFilters';
 import { addNotification } from '#notifications/notificationsSlice';
 import { useDispatch } from '#redux';
 import { useUpdateDashboardWidgetMutation } from '#reports/mutations';
+import { mapField } from '#util/rule';
 
 export function Sankey() {
   const params = useParams();
@@ -83,18 +87,18 @@ type GraphMode = 'budgeted' | 'spent';
 
 type LayerDirection = 'from' | 'to';
 type LayerRange = {
-  from: GraphLayers;
-  to: GraphLayers;
+  from: GraphLayer;
+  to: GraphLayer;
 };
 
-function getAvailableLayers(mode: GraphMode): GraphLayers[] {
+function getAvailableLayers(mode: GraphMode): GraphLayer[] {
   return GRAPH_LAYER_ORDER.filter(layer => {
     if (mode === 'budgeted') {
       return layer !== GraphLayers.IncomePayee;
     }
 
     return layer !== GraphLayers.Budget;
-  }) as GraphLayers[];
+  }) as GraphLayer[];
 }
 
 export function getDefaultLayerRange(mode: GraphMode): LayerRange {
@@ -157,8 +161,8 @@ function normalizeLayerRange(
 function getLayerMenuItems(
   mode: GraphMode,
   direction: LayerDirection,
-  otherLayer: GraphLayers,
-): GraphLayers[] {
+  otherLayer: GraphLayer,
+): GraphLayer[] {
   const availableLayers = getAvailableLayers(mode);
   const otherIndex = availableLayers.indexOf(otherLayer);
 
@@ -284,10 +288,10 @@ function CategorySortSelector({ value, onChange }: CategorySortSelectorProps) {
 
 type LayerSelectorProps = {
   direction: LayerDirection;
-  value: GraphLayers;
-  layerLabels: Record<GraphLayers, string>;
-  menuItems: GraphLayers[];
-  onChange: (layer: GraphLayers) => void;
+  value: GraphLayer;
+  layerLabels: Record<GraphLayer, string>;
+  menuItems: GraphLayer[];
+  onChange: (layer: GraphLayer) => void;
 };
 
 function LayerSelector({
@@ -323,7 +327,7 @@ function LayerSelector({
       >
         <Menu
           onMenuSelect={item => {
-            onChange(item as GraphLayers);
+            onChange(item as GraphLayer);
             setIsOpen(false);
           }}
           items={menuItems.map(layer => ({
@@ -375,6 +379,8 @@ type OptionsButtonProps = {
   onTogglePercentages: () => void;
   groupAccounts: boolean;
   onToggleGroupAccounts: () => void;
+  showTransfers: boolean;
+  onToggleShowTransfers: () => void;
 };
 
 function OptionsButton({
@@ -382,6 +388,8 @@ function OptionsButton({
   onTogglePercentages,
   groupAccounts,
   onToggleGroupAccounts,
+  showTransfers,
+  onToggleShowTransfers,
 }: OptionsButtonProps) {
   const { t } = useTranslation();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -401,6 +409,7 @@ function OptionsButton({
           onMenuSelect={item => {
             if (item === 'show-percentages') onTogglePercentages();
             if (item === 'group-accounts') onToggleGroupAccounts();
+            if (item === 'show-transfers') onToggleShowTransfers();
           }}
           items={[
             {
@@ -412,6 +421,11 @@ function OptionsButton({
               name: 'group-accounts',
               text: t('Group accounts in Spent view'),
               toggle: groupAccounts,
+            },
+            {
+              name: 'show-transfers',
+              text: t('Show transfers in Spent view'),
+              toggle: showTransfers,
             },
           ]}
         />
@@ -505,14 +519,17 @@ function SankeyInner({ widget }: SankeyInnerProps) {
   const [groupAccounts, setGroupAccounts] = useState(
     widget?.meta?.groupAccounts ?? false,
   );
+  const [showTransfers, setShowTransfers] = useState(
+    widget?.meta?.showTransfers ?? false,
+  );
 
   const [layerRange, setLayerRange] = useState<LayerRange>(() =>
     normalizeLayerRange(widget?.meta?.mode ?? 'spent', {
       from:
-        (widget?.meta?.layerFrom as GraphLayers) ??
+        (widget?.meta?.layerFrom as GraphLayer) ??
         getDefaultLayerRange(widget?.meta?.mode ?? 'spent').from,
       to:
-        (widget?.meta?.layerTo as GraphLayers) ??
+        (widget?.meta?.layerTo as GraphLayer) ??
         getDefaultLayerRange(widget?.meta?.mode ?? 'spent').to,
     }),
   );
@@ -524,7 +541,7 @@ function SankeyInner({ widget }: SankeyInnerProps) {
     setLayerRange(prev => normalizeLayerRange(graphMode, prev));
   }, [graphMode]);
 
-  const layerLabels = useMemo<Record<GraphLayers, string>>(
+  const layerLabels = useMemo<Record<GraphLayer, string>>(
     () => ({
       [GraphLayers.IncomePayee]: t('Payee'),
       [GraphLayers.IncomeCategory]: t('Income category'),
@@ -545,7 +562,7 @@ function SankeyInner({ widget }: SankeyInnerProps) {
     [graphMode, layerFrom],
   );
 
-  function onChangeLayer(direction: LayerDirection, layer: GraphLayers) {
+  function onChangeLayer(direction: LayerDirection, layer: GraphLayer) {
     setLayerRange(prev => {
       const next =
         direction === 'from'
@@ -568,16 +585,26 @@ function SankeyInner({ widget }: SankeyInnerProps) {
       return null;
     }
 
-    return createBaseGraphSpreadsheet(
+    const [boundedStart, boundedEnd] = boundMonthRangeFromDates(
+      earliestTransaction,
+      latestTransaction,
       start,
       end,
+    );
+
+    return createBaseGraphSpreadsheet(
+      boundedStart,
+      boundedEnd,
       groupedCategories,
       conditions,
       conditionsOp,
       graphMode,
       groupAccounts,
+      showTransfers,
     );
   }, [
+    earliestTransaction,
+    latestTransaction,
     datesInitialized,
     start,
     end,
@@ -586,6 +613,7 @@ function SankeyInner({ widget }: SankeyInnerProps) {
     conditionsOp,
     graphMode,
     groupAccounts,
+    showTransfers,
   ]);
 
   const defaultGetBaseGraph = async (
@@ -650,29 +678,13 @@ function SankeyInner({ widget }: SankeyInnerProps) {
       setDatesInitialized(true);
 
       const currentMonth = monthUtils.currentMonth();
-      let earliestMonth = earliestTransaction
-        ? monthUtils.monthFromDate(
-            d.parseISO(fromDateRepr(earliestTransaction.date)),
-          )
-        : currentMonth;
-      const latestTransactionMonth = latestTransaction
-        ? monthUtils.monthFromDate(
-            d.parseISO(fromDateRepr(latestTransaction.date)),
-          )
-        : currentMonth;
+      const earliestMonth = monthUtils.getMonth(earliestTransactionDate);
+      const latestTransactionMonth = monthUtils.getMonth(latestTransactionDate);
 
       const latestMonth =
         latestTransactionMonth > currentMonth
           ? latestTransactionMonth
           : currentMonth;
-
-      // Make sure the month selects are at least populated with a
-      // year's worth of months. We can undo this when we have fancier
-      // date selects.
-      const yearAgo = monthUtils.subMonths(latestMonth, 12);
-      if (earliestMonth > yearAgo) {
-        earliestMonth = yearAgo;
-      }
 
       const allMonths = monthUtils
         .rangeInclusive(earliestMonth, latestMonth)
@@ -710,6 +722,7 @@ function SankeyInner({ widget }: SankeyInnerProps) {
             topNcategories,
             categorySort,
             showPercentages,
+            showTransfers,
             layerFrom,
             layerTo,
             timeFrame: {
@@ -827,8 +840,6 @@ function SankeyInner({ widget }: SankeyInnerProps) {
                 width: 1,
                 height: 28,
                 backgroundColor: theme.pillBorderDark,
-                marginRight: 10,
-                marginLeft: 10,
               }}
             />
             <GraphModeSelector mode={graphMode} onChange={setGraphMode} />
@@ -837,8 +848,6 @@ function SankeyInner({ widget }: SankeyInnerProps) {
                 width: 1,
                 height: 28,
                 backgroundColor: theme.pillBorderDark,
-                marginRight: 10,
-                marginLeft: 10,
               }}
             />
             <TopNSelector value={topNcategories} onChange={settopNcategories} />
@@ -887,6 +896,8 @@ function SankeyInner({ widget }: SankeyInnerProps) {
             onTogglePercentages={() => setShowPercentages(v => !v)}
             groupAccounts={groupAccounts}
             onToggleGroupAccounts={() => setGroupAccounts(v => !v)}
+            showTransfers={showTransfers}
+            onToggleShowTransfers={() => setShowTransfers(v => !v)}
           />
         </View>
         {widget && (
@@ -986,7 +997,7 @@ function SankeyInner({ widget }: SankeyInnerProps) {
                       color: theme.warningText,
                     }}
                   >
-                    <Text style={{ fontSize: 13 }}>
+                    <Text size="medium">
                       <Trans>
                         Filters on <strong>{ignoredFilterFieldsList}</strong>{' '}
                         are ignored in <strong>Budgeted</strong> mode.

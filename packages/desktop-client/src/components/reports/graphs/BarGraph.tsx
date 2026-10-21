@@ -185,6 +185,26 @@ const customLabel = (props, typeOp, format) => {
   return renderCustomLabel(calcX, calcY, textAnchor, display, textSize);
 };
 
+type ReportDrilldownPayload = Pick<GroupedEntity, 'uncategorizedId'>;
+
+function hasUncategorizedId(value: unknown): value is ReportDrilldownPayload {
+  return (
+    value !== null && typeof value === 'object' && 'uncategorizedId' in value
+  );
+}
+
+// Recharts types the bar's payload as `any`, so check it holds interval dates
+type IntervalDrilldownPayload = Pick<
+  IntervalEntity,
+  'intervalStartDate' | 'intervalEndDate'
+>;
+
+function hasIntervalDates(value: unknown): value is IntervalDrilldownPayload {
+  return (
+    value !== null && typeof value === 'object' && 'intervalStartDate' in value
+  );
+}
+
 type BarGraphProps = {
   style?: CSSProperties;
   data: DataEntity;
@@ -309,13 +329,37 @@ export function BarGraph({
                 stackId="a"
                 {...animationProps}
                 onMouseLeave={() => setPointer('')}
-                onMouseEnter={() =>
-                  !['Group', 'Interval'].includes(groupBy) &&
-                  setPointer('pointer')
-                }
-                onClick={item =>
-                  ((compact && showTooltip) || !compact) &&
-                  !['Group', 'Interval'].includes(groupBy) &&
+                onMouseEnter={() => setPointer('pointer')}
+                onClick={item => {
+                  if (compact && !showTooltip) {
+                    return;
+                  }
+
+                  const intervalPayload = hasIntervalDates(item.payload)
+                    ? item.payload
+                    : undefined;
+                  const itemPayload = hasUncategorizedId(item.payload)
+                    ? item.payload
+                    : undefined;
+
+                  // Interval bars drill down by their own date range instead of a field
+                  const drilldown =
+                    groupBy === 'Interval'
+                      ? {
+                          startDate:
+                            intervalPayload?.intervalStartDate ??
+                            data.startDate,
+                          endDate:
+                            intervalPayload?.intervalEndDate ?? data.endDate,
+                        }
+                      : {
+                          startDate: data.startDate,
+                          endDate: data.endDate,
+                          field: groupBy.toLowerCase(),
+                          id: item.id,
+                          uncategorizedId: itemPayload?.uncategorizedId,
+                        };
+
                   showActivity({
                     navigate,
                     categories,
@@ -325,12 +369,11 @@ export function BarGraph({
                     showHiddenCategories,
                     showOffBudget,
                     type: 'totals',
-                    startDate: data.startDate,
-                    endDate: data.endDate,
-                    field: groupBy.toLowerCase(),
-                    id: item.id,
-                  })
-                }
+                    ...drilldown,
+                    bucketTagNames: item.payload.bucketTagNames,
+                    scopeTagNames: data.scopeTagNames,
+                  });
+                }}
                 shape={(props: BarShapeProps) => (
                   <Rectangle
                     {...props}

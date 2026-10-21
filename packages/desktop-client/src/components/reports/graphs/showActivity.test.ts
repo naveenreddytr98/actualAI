@@ -1,0 +1,273 @@
+import { makeExactTagSetQueryFilter } from '@actual-app/core/shared/tags';
+import type {
+  AccountEntity,
+  CategoryEntity,
+  CategoryGroupEntity,
+} from '@actual-app/core/types/models';
+import { describe, expect, it, vi } from 'vitest';
+
+import { showActivity } from './showActivity';
+
+const categories: { grouped: CategoryGroupEntity[]; list: CategoryEntity[] } = {
+  grouped: [],
+  list: [],
+};
+const accounts: AccountEntity[] = [];
+
+describe('showActivity', () => {
+  it('uses the exact tag query filter when opening report activity', () => {
+    const navigate = vi.fn();
+
+    showActivity({
+      navigate,
+      categories,
+      accounts,
+      balanceTypeOp: 'totalAssets',
+      filters: [],
+      showHiddenCategories: true,
+      showOffBudget: true,
+      type: 'totals',
+      startDate: '2026-05-24',
+      endDate: '2026-05-30',
+      field: 'tag',
+      id: 'tag-group:circle-id:red-id',
+      bucketTagNames: ['circle', 'red'],
+      scopeTagNames: ['circle', 'red', 'blue'],
+    });
+
+    const [, options] = navigate.mock.calls[0];
+    expect(options.state.filterConditions).toContainEqual(
+      expect.objectContaining({
+        queryFilter: makeExactTagSetQueryFilter(
+          ['circle', 'red'],
+          ['circle', 'red', 'blue'],
+        ),
+      }),
+    );
+  });
+
+  it('adds a transfer filter for the virtual Transfers category', () => {
+    const navigate = vi.fn();
+
+    showActivity({
+      navigate,
+      categories,
+      accounts,
+      balanceTypeOp: 'totalAssets',
+      filters: [{ field: 'account', op: 'is', value: 'acct-1', type: 'id' }],
+      showHiddenCategories: true,
+      showOffBudget: true,
+      type: 'totals',
+      startDate: '2026-05-24',
+      endDate: '2026-05-30',
+      field: 'category',
+      id: '',
+      uncategorizedId: 'transfer',
+    });
+
+    const [path, options] = navigate.mock.calls[0];
+    const filterConditions = options.state.filterConditions;
+
+    expect(path).toBe('/accounts');
+    expect(filterConditions).toContainEqual({
+      field: 'transfer',
+      op: 'is',
+      value: true,
+      type: 'boolean',
+    });
+    expect(filterConditions).not.toContainEqual({
+      field: 'category',
+      op: 'is',
+      value: '',
+      type: 'id',
+    });
+  });
+
+  it('adds a category group filter when drilling down by group', () => {
+    const navigate = vi.fn();
+
+    showActivity({
+      navigate,
+      categories,
+      accounts,
+      balanceTypeOp: 'totalAssets',
+      filters: [],
+      showHiddenCategories: true,
+      showOffBudget: true,
+      type: 'totals',
+      startDate: '2026-05-24',
+      endDate: '2026-05-30',
+      field: 'group',
+      id: 'group-usual',
+    });
+
+    const [path, options] = navigate.mock.calls[0];
+
+    expect(path).toBe('/accounts');
+    expect(options.state.filterConditions).toContainEqual({
+      field: 'category_group',
+      op: 'is',
+      value: 'group-usual',
+      type: 'id',
+    });
+  });
+
+  it('omits the category group filter for the uncategorized group', () => {
+    const navigate = vi.fn();
+
+    showActivity({
+      navigate,
+      categories,
+      accounts,
+      balanceTypeOp: 'totalAssets',
+      filters: [],
+      showHiddenCategories: true,
+      showOffBudget: true,
+      type: 'totals',
+      startDate: '2026-05-24',
+      endDate: '2026-05-30',
+      field: 'group',
+      id: 'uncategorized',
+      uncategorizedId: 'all',
+    });
+
+    const [, options] = navigate.mock.calls[0];
+
+    expect(
+      options.state.filterConditions.filter((f: { field: string }) =>
+        ['category', 'category_group'].includes(f.field),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('keeps the category filter for regular categories', () => {
+    const navigate = vi.fn();
+
+    showActivity({
+      navigate,
+      categories,
+      accounts,
+      balanceTypeOp: 'totalAssets',
+      filters: [],
+      showHiddenCategories: true,
+      showOffBudget: true,
+      type: 'totals',
+      startDate: '2026-05-24',
+      endDate: '2026-05-30',
+      field: 'category',
+      id: 'cat-food',
+    });
+
+    const [, options] = navigate.mock.calls[0];
+
+    expect(options.state.filterConditions).toContainEqual({
+      field: 'category',
+      op: 'is',
+      value: 'cat-food',
+      type: 'id',
+    });
+  });
+
+  it.each([
+    // Deposit and Payment charts
+    { balanceTypeOp: 'totalAssets', type: 'totals', inflow: true },
+    { balanceTypeOp: 'totalDebts', type: 'totals', inflow: false },
+    // Deposits and Payments columns of a Net table
+    { balanceTypeOp: 'totalTotals', type: 'assets', inflow: true },
+    { balanceTypeOp: 'totalTotals', type: 'debts', inflow: false },
+  ] as const)(
+    'filters a $balanceTypeOp $type interval drilldown to that interval and direction',
+    ({ balanceTypeOp, type, inflow }) => {
+      const navigate = vi.fn();
+
+      showActivity({
+        navigate,
+        categories,
+        accounts,
+        balanceTypeOp,
+        filters: [],
+        showHiddenCategories: true,
+        showOffBudget: true,
+        type,
+        startDate: '2026-05-01',
+        endDate: '2026-05-31',
+      });
+
+      const [, options] = navigate.mock.calls[0];
+
+      expect(options.state.filterConditions).toEqual([
+        { field: 'date', op: 'gte', value: '2026-05-01', type: 'date' },
+        {
+          field: 'date',
+          op: 'lte',
+          value: '2026-05-31',
+          options: { date: true },
+        },
+        {
+          field: 'amount',
+          op: 'gte',
+          value: 0,
+          options: { type: 'number', inflow, outflow: !inflow },
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    { interval: 'Monthly', startDate: '2026-06', expected: '2026-06-01' },
+    { interval: 'Yearly', startDate: '2026', expected: '2026-01-01' },
+  ])(
+    'expands a $interval interval key into a full start date',
+    ({ startDate, expected }) => {
+      const navigate = vi.fn();
+
+      showActivity({
+        navigate,
+        categories,
+        accounts,
+        balanceTypeOp: 'totalTotals',
+        filters: [],
+        showHiddenCategories: true,
+        showOffBudget: true,
+        type: 'totals',
+        startDate,
+        endDate: '2026-06-30',
+      });
+
+      const [, options] = navigate.mock.calls[0];
+
+      expect(options.state.filterConditions).toContainEqual({
+        field: 'date',
+        op: 'gte',
+        value: expected,
+        type: 'date',
+      });
+    },
+  );
+
+  it.each(['totalTotals', 'netAssets', 'netDebts'] as const)(
+    'includes all transactions for a %s interval drilldown',
+    balanceTypeOp => {
+      const navigate = vi.fn();
+
+      showActivity({
+        navigate,
+        categories,
+        accounts,
+        balanceTypeOp,
+        filters: [],
+        showHiddenCategories: true,
+        showOffBudget: true,
+        type: 'totals',
+        startDate: '2026-05-01',
+        endDate: '2026-05-31',
+      });
+
+      const [, options] = navigate.mock.calls[0];
+
+      expect(
+        options.state.filterConditions.map((f: { field: string }) => f.field),
+      ).toEqual(['date', 'date']);
+    },
+  );
+});

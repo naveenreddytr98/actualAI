@@ -4,7 +4,7 @@ The purpose of a budget is to answer simple questions: how much money did I save
 
 There are many approaches to budgeting. Some of the approaches that seem simple at first end up causing more work to keep an accurate budget, or make it easy for hidden expenses to drain your savings.
 
-We find the best way to track your money is rooted in something called **[envelope budgeting](/docs/getting-started/envelope-budgeting.md)**. Instead of predicting how much you'll make and spend and trying to reconcile that with what actually happened, envelope budgeting embraces real income as the source of your budget instead. This means you can only budget money that you already have.
+We find the best way to track your money is rooted in something called **[envelope budgeting](../getting-started/envelope-budgeting.md)**. Instead of predicting how much you'll make and spend and trying to reconcile that with what actually happened, envelope budgeting embraces real income as the source of your budget instead. This means you can only budget money that you already have.
 
 You can think of categories as little funds that you deposit money into. Combined with our rollover system, it provides an intuitive way to handle a lot of things that come up in life. And you know it's always accurately depicting your finances — there's no made up numbers.
 
@@ -44,7 +44,7 @@ Most likely, a common workflow will be to "hold" income you make this month for 
 1. Click the **To Budget** amount.
 2. Select **Hold for next month** in the menu.
 
-![hold funds](/img/how-it-works/buffer-1.webp)
+   <img width="321" alt="The To Budget menu with Hold for next month highlighted" src="/img/budgeting/budgeting-hold-for-next-month@2x.webp" />
 
 3. Press <Key k="enter" /> to hold all available money, or enter a custom amount to hold.
 
@@ -59,8 +59,9 @@ It is possible to hold money multiple months ahead. If you do this, those dollar
 :::note
 If you enter a new month and have a negative "To Be Budgeted" amount and you're sure it should be positive, try resetting next month's buffer to bring money that may be held back to the current month.
 :::
+
 :::note
-If you hold funds regularly, you can [automatically hold funds from specific income categories](./#automatic-holding-of-funds).
+If you hold funds regularly, you can [automatically hold funds from specific income categories](./index.md#automatic-holding-of-funds).
 :::
 
 ### Overspending
@@ -108,15 +109,15 @@ Sometimes, you want to be consistently holding funds for future months.
 For example, if you use the "Month Ahead" strategy and reserve all income from the current month for the next month, keeping the held funds up to date and accurate can be a lot of work.
 You can automate holding funds from specific income categories for future months by clicking the income total and enabling the auto hold for that category.
 
-![Auto hold funds menu](/img/how-it-works/auto-hold.webp)
+<img width="724" alt="The Income category menu with Enable auto hold highlighted" src="/img/budgeting/budgeting-auto-hold@2x.webp" />
 
 When the _auto hold_ function has been enabled for an income category, this will be indicated by an arrow.
 The income category will be set for automatic holding starting from the current month and the following 12 months.
 If wanted, the _auto hold_ functionality can be turned off by clicking the income balance and choosing "Disable auto hold".
 
-![Auto hold indicator](/img/how-it-works/auto-hold-carryover.webp)
+<img width="724" alt="The Income category with the auto hold arrow next to its amount" src="/img/budgeting/budgeting-auto-hold-indicator@2x.webp" />
 
 If you need to modify the _held funds_ later in the month, you can disable the auto hold for the current month by clicking the budget value and choosing "Disable current auto hold."
 You may then set the held funds like normal and the _auto hold_ will still be set in the future.
 
-![Auto hold disable current month](/img/how-it-works/auto-hold-disable.webp)
+<img width="502" alt="The To Budget menu with Disable current auto hold highlighted" src="/img/budgeting/budgeting-auto-hold-disable@2x.webp" />

@@ -42,10 +42,8 @@ import {
 import { useDispatch } from '#redux';
 import {
   useAddDashboardWidgetMutation,
-  useCopyDashboardWidgetMutation,
   useDeleteDashboardPageMutation,
   useImportDashboardPageMutation,
-  useRemoveDashboardWidgetMutation,
   useResetDashboardPageMutation,
   useUpdateDashboardWidgetMutation,
   useUpdateDashboardWidgetsMutation,
@@ -66,35 +64,37 @@ import { CustomReportListCards } from './reports/CustomReportListCards';
 import { FormulaCard } from './reports/FormulaCard';
 import { MarkdownCard } from './reports/MarkdownCard';
 import { MissingReportCard } from './reports/MissingReportCard';
+import { MonteCarloCard } from './reports/monte-carlo/MonteCarloCard';
 import { NetWorthCard } from './reports/NetWorthCard';
 import { SankeyCard } from './reports/SankeyCard';
 import { SpendingCard } from './reports/SpendingCard';
 import { SummaryCard } from './reports/SummaryCard';
 
-function isCustomReportWidget(
-  widget: DashboardWidgetEntity,
-): widget is CustomReportWidget {
-  return widget.type === 'custom-report';
-}
-
 function getWidgetMinHeight(widget: DashboardWidgetEntity) {
-  if (isCustomReportWidget(widget) || widget.type === 'markdown-card') {
-    return 1;
+  switch (widget.type) {
+    case 'custom-report':
+    case 'markdown-card':
+    case 'formula-card':
+      return 1;
+    case 'sankey-card':
+      return 3;
+    default:
+      return 2;
   }
-
-  if (widget.type === 'sankey-card') {
-    return 3;
-  }
-
-  return 2;
 }
 
 function getWidgetMinWidth(widget: DashboardWidgetEntity) {
-  if (isCustomReportWidget(widget) || widget.type === 'markdown-card') {
-    return 2;
+  switch (widget.type) {
+    case 'formula-card':
+      return 1;
+    case 'custom-report':
+    case 'markdown-card':
+    case 'cash-flow-card':
+    case 'summary-card':
+      return 2;
+    default:
+      return 3;
   }
-
-  return 3;
 }
 
 type OverviewProps = {
@@ -106,9 +106,9 @@ export function Overview({ dashboard }: OverviewProps) {
   const dispatch = useDispatch();
   const [_firstDayOfWeekIdx] = useSyncedPref('firstDayOfWeekIdx');
   const firstDayOfWeekIdx = _firstDayOfWeekIdx || '0';
-  const ageOfMoneyReportEnabled = useFeatureFlag('ageOfMoneyReport');
   const budgetAnalysisReportEnabled = useFeatureFlag('budgetAnalysisReport');
   const balanceForecastReportEnabled = useFeatureFlag('balanceForecastReport');
+  const monteCarloReportEnabled = useFeatureFlag('monteCarloReport');
 
   const formulaMode = useFeatureFlag('formulaMode');
 
@@ -298,13 +298,7 @@ export function Overview({ dashboard }: OverviewProps) {
     });
   };
 
-  const removeDashboardWidgetMutation = useRemoveDashboardWidgetMutation();
-
-  const onRemoveWidget = (widgetId: string) => {
-    removeDashboardWidgetMutation.mutate({ id: widgetId });
-  };
-
-  const onExport = () => {
+  const onExport = async () => {
     const data = {
       version: 1,
       widgets: desktopLayout.map(item => {
@@ -314,7 +308,7 @@ export function Overview({ dashboard }: OverviewProps) {
           throw new Error(`Unable to query widget: ${item.i}`);
         }
 
-        if (isCustomReportWidget(widget)) {
+        if (widget.type === 'custom-report') {
           const customReport = customReportMap.get(widget.meta.id);
 
           if (!customReport) {
@@ -333,11 +327,22 @@ export function Overview({ dashboard }: OverviewProps) {
       }),
     } satisfies ExportImportDashboard;
 
-    void window.Actual.saveFile(
-      JSON.stringify(data, null, 2),
-      'dashboard.json',
-      t('Export Dashboard'),
-    );
+    try {
+      await window.Actual.saveFile(
+        JSON.stringify(data, null, 2),
+        'dashboard.json',
+        t('Export Dashboard'),
+      );
+    } catch {
+      dispatch(
+        addNotification({
+          notification: {
+            type: 'error',
+            message: t('Failed to export the dashboard file.'),
+          },
+        }),
+      );
+    }
   };
 
   const importDashboardPageMutation = useImportDashboardPageMutation();
@@ -445,15 +450,6 @@ export function Overview({ dashboard }: OverviewProps) {
         id: widget.i,
         meta: newMeta,
       },
-    });
-  };
-
-  const copyDashboardWidgetMutation = useCopyDashboardWidgetMutation();
-
-  const onCopyWidget = (widgetId: string, targetDashboardId: string) => {
-    copyDashboardWidgetMutation.mutate({
-      id: widgetId,
-      targetDashboardPageId: targetDashboardId,
     });
   };
 
@@ -598,14 +594,10 @@ export function Overview({ dashboard }: OverviewProps) {
                               name: 'crossover-card' as const,
                               text: t('Crossover point'),
                             },
-                            ...(ageOfMoneyReportEnabled
-                              ? [
-                                  {
-                                    name: 'age-of-money-card' as const,
-                                    text: t('Age of Money'),
-                                  },
-                                ]
-                              : []),
+                            {
+                              name: 'age-of-money-card' as const,
+                              text: t('Age of Money'),
+                            },
                             {
                               name: 'spending-card' as const,
                               text: t('Spending analysis'),
@@ -623,6 +615,14 @@ export function Overview({ dashboard }: OverviewProps) {
                                   {
                                     name: 'balance-forecast-card' as const,
                                     text: t('Balance forecast'),
+                                  },
+                                ]
+                              : []),
+                            ...(monteCarloReportEnabled
+                              ? [
+                                  {
+                                    name: 'monte-carlo-card' as const,
+                                    text: t('Monte Carlo analysis'),
                                   },
                                 ]
                               : []),
@@ -707,7 +707,7 @@ export function Overview({ dashboard }: OverviewProps) {
                                 void onResetDashboard();
                                 break;
                               case 'export':
-                                onExport();
+                                void onExport();
                                 break;
                               case 'import':
                                 void onImport();
@@ -798,8 +798,8 @@ export function Overview({ dashboard }: OverviewProps) {
                       <ErrorBoundary
                         fallbackRender={() => (
                           <MissingReportCard
+                            widgetId={item.i}
                             isEditing={isEditing}
-                            onRemove={() => onRemoveWidget(item.i)}
                           >
                             <Trans>This widget has failed to load.</Trans>
                           </MissingReportCard>
@@ -814,10 +814,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
                         ) : widget.type === 'crossover-card' ? (
                           <CrossoverCard
@@ -828,23 +824,14 @@ export function Overview({ dashboard }: OverviewProps) {
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
-                        ) : widget.type === 'age-of-money-card' &&
-                          ageOfMoneyReportEnabled ? (
+                        ) : widget.type === 'age-of-money-card' ? (
                           <AgeOfMoneyCard
                             widgetId={item.i}
                             isEditing={isEditing}
                             meta={widget.meta}
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
-                            }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
                             }
                           />
                         ) : widget.type === 'cash-flow-card' ? (
@@ -855,10 +842,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
                         ) : widget.type === 'spending-card' ? (
                           <SpendingCard
@@ -867,10 +850,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             meta={widget.meta}
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
-                            }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
                             }
                           />
                         ) : widget.type === 'budget-analysis-card' &&
@@ -881,10 +860,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             meta={widget.meta}
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
-                            }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
                             }
                           />
                         ) : widget.type === 'balance-forecast-card' &&
@@ -897,31 +872,21 @@ export function Overview({ dashboard }: OverviewProps) {
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
                         ) : widget.type === 'markdown-card' ? (
                           <MarkdownCard
+                            widgetId={item.i}
                             isEditing={isEditing}
                             meta={widget.meta}
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
                         ) : widget.type === 'custom-report' ? (
                           <CustomReportListCards
+                            widgetId={item.i}
                             isEditing={isEditing}
                             report={customReportMap.get(widget.meta.id)}
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
                         ) : widget.type === 'summary-card' ? (
                           <SummaryCard
@@ -930,10 +895,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             meta={widget.meta}
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
-                            }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
                             }
                           />
                         ) : widget.type === 'calendar-card' ? (
@@ -945,10 +906,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
-                            }
                           />
                         ) : widget.type === 'formula-card' && formulaMode ? (
                           <FormulaCard
@@ -957,10 +914,6 @@ export function Overview({ dashboard }: OverviewProps) {
                             meta={widget.meta}
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
-                            }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
                             }
                           />
                         ) : widget.type === 'sankey-card' &&
@@ -972,9 +925,15 @@ export function Overview({ dashboard }: OverviewProps) {
                             onMetaChange={newMeta =>
                               onMetaChange(item, newMeta)
                             }
-                            onRemove={() => onRemoveWidget(item.i)}
-                            onCopy={targetDashboardId =>
-                              onCopyWidget(item.i, targetDashboardId)
+                          />
+                        ) : widget.type === 'monte-carlo-card' &&
+                          monteCarloReportEnabled ? (
+                          <MonteCarloCard
+                            widgetId={item.i}
+                            isEditing={isEditing}
+                            meta={widget.meta}
+                            onMetaChange={newMeta =>
+                              onMetaChange(item, newMeta)
                             }
                           />
                         ) : null}

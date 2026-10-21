@@ -27,6 +27,7 @@ import { useSyncedPref } from '#hooks/useSyncedPref';
 import { loadPrefs } from '#prefs/prefsSlice';
 import { useDispatch, useSelector } from '#redux';
 
+import { AISettings } from './AISettings';
 import { AuthSettings } from './AuthSettings';
 import { Backups } from './Backups';
 import { BudgetTypeSettings } from './BudgetTypeSettings';
@@ -172,6 +173,7 @@ export function Settings() {
   const [budgetName] = useMetadataPref('budgetName');
   const dispatch = useDispatch();
   const isCurrencyExperimentalEnabled = useFeatureFlag('currency');
+  const isAICategorizationEnabled = useFeatureFlag('aiCategorization');
   const [_, setDefaultCurrencyCodePref] = useSyncedPref('defaultCurrencyCode');
 
   const onCloseBudget = () => {
@@ -246,6 +248,7 @@ export function Settings() {
         <BudgetTypeSettings />
         {isElectron() && <Backups />}
         <ExportBudget />
+        {isAICategorizationEnabled && <AISettings />}
         <AdvancedToggle>
           <AdvancedAbout />
           <ResetCache />

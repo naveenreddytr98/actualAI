@@ -125,6 +125,9 @@ async function saveGlobalPrefs(prefs: GlobalPrefs) {
       prefs.notifyWhenUpdateIsAvailable,
     );
   }
+  if (prefs.anthropicApiKey !== undefined) {
+    await asyncStorage.setItem('anthropic-api-key', prefs.anthropicApiKey);
+  }
   return 'ok';
 }
 
@@ -144,6 +147,7 @@ async function loadGlobalPrefs(): Promise<GlobalPrefs> {
     'server-self-signed-cert': serverSelfSignedCert,
     syncServerConfig,
     notifyWhenUpdateIsAvailable,
+    'anthropic-api-key': anthropicApiKey,
   } = await asyncStorage.multiGet([
     'floating-sidebar',
     'category-expanded-state',
@@ -159,6 +163,7 @@ async function loadGlobalPrefs(): Promise<GlobalPrefs> {
     'server-self-signed-cert',
     'syncServerConfig',
     'notifyWhenUpdateIsAvailable',
+    'anthropic-api-key',
   ] as const);
   return {
     floatingSidebar: floatingSidebar === 'true',
@@ -187,6 +192,7 @@ async function loadGlobalPrefs(): Promise<GlobalPrefs> {
       notifyWhenUpdateIsAvailable === undefined
         ? true
         : notifyWhenUpdateIsAvailable, // default to true
+    anthropicApiKey: anthropicApiKey || undefined,
   };
 }
 

@@ -43,6 +43,7 @@ import type { SavedFilter } from '#components/filters/SavedFilterMenuButton';
 import { NotesButton } from '#components/NotesButton';
 import { SelectedTransactionsButton } from '#components/transactions/SelectedTransactionsButton';
 import { useDateFormat } from '#hooks/useDateFormat';
+import { useFeatureFlag } from '#hooks/useFeatureFlag';
 import { useLocale } from '#hooks/useLocale';
 import { useLocalPref } from '#hooks/useLocalPref';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
@@ -189,6 +190,7 @@ export function AccountHeader({
   onMergeTransactions,
 }: AccountHeaderProps) {
   const { t } = useTranslation();
+  const aiCategorization = useFeatureFlag('aiCategorization');
 
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -550,6 +552,14 @@ export function AccountHeader({
                             ]
                           : []),
                         { name: 'export', text: t('Export') },
+                        ...(aiCategorization
+                          ? [
+                              {
+                                name: 'ai-categorize',
+                                text: t('Review AI categories'),
+                              } as const,
+                            ]
+                          : []),
                         {
                           name: 'toggle-net-worth-chart',
                           text: showNetWorthChart
@@ -753,7 +763,8 @@ type AccountMenuProps = {
       | 'remove-sorting'
       | 'toggle-cleared'
       | 'toggle-reconciled'
-      | 'toggle-net-worth-chart',
+      | 'toggle-net-worth-chart'
+      | 'ai-categorize',
   ) => void;
 };
 
@@ -770,6 +781,7 @@ function AccountMenu({
 }: AccountMenuProps) {
   const { t } = useTranslation();
   const syncServerStatus = useSyncServerStatus();
+  const aiCategorization = useFeatureFlag('aiCategorization');
 
   return (
     <Menu
@@ -815,6 +827,14 @@ function AccountMenu({
             : t('Show reconciled transactions'),
         },
         { name: 'export', text: t('Export') },
+        ...(aiCategorization
+          ? [
+              {
+                name: 'ai-categorize',
+                text: t('Review AI categories'),
+              } as const,
+            ]
+          : []),
         ...(account && !account.closed
           ? canSync
             ? [

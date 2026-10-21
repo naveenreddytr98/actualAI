@@ -14,6 +14,7 @@ import { useDispatch } from '#redux';
 import { EditSyncAccount } from './banksync/EditSyncAccount';
 import { AccountAutocompleteModal } from './modals/AccountAutocompleteModal';
 import { AccountMenuModal } from './modals/AccountMenuModal';
+import { AICategoryReviewModal } from './modals/AICategoryReviewModal';
 import { BudgetAutomationsModal } from './modals/BudgetAutomationsModal';
 import { BudgetPageMenuModal } from './modals/BudgetPageMenuModal';
 import { CategoryAutocompleteModal } from './modals/CategoryAutocompleteModal';
@@ -269,6 +270,9 @@ export function Modals() {
 
         case 'synced-account-edit':
           return <EditSyncAccount key={key} {...modal.options} />;
+
+        case 'ai-category-review':
+          return <AICategoryReviewModal key={key} {...modal.options} />;
 
         case 'account-menu':
           return <AccountMenuModal key={key} {...modal.options} />;

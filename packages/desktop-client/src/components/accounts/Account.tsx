@@ -781,7 +781,8 @@ class AccountInternal extends PureComponent<
       | 'remove-sorting'
       | 'toggle-cleared'
       | 'toggle-reconciled'
-      | 'toggle-net-worth-chart',
+      | 'toggle-net-worth-chart'
+      | 'ai-categorize',
   ) => {
     const accountId = this.props.accountId!;
     const account = this.props.accounts.find(
@@ -890,6 +891,26 @@ class AccountInternal extends PureComponent<
           this.props.setShowNetWorthChart(true);
         }
         break;
+      case 'ai-categorize': {
+        const id = this.props.accountId;
+        const isAccount =
+          id != null &&
+          id !== 'onbudget' &&
+          id !== 'offbudget' &&
+          id !== 'uncategorized' &&
+          this.props.accounts.some(account => account.id === id);
+        this.props.dispatch(
+          pushModal({
+            modal: {
+              name: 'ai-category-review',
+              options: {
+                accountId: isAccount ? id : undefined,
+              },
+            },
+          }),
+        );
+        break;
+      }
       default:
     }
   };

@@ -10,7 +10,8 @@ export type FeatureFlag =
   | 'budgetAnalysisReport'
   | 'payeeLocations'
   | 'enableBanking'
-  | 'sankeyReport';
+  | 'sankeyReport'
+  | 'aiCategorization';
 
 /**
  * Cross-device preferences. These sync across devices when they are changed.
@@ -130,6 +131,9 @@ export type GlobalPrefs = Partial<{
     port?: number;
   };
   notifyWhenUpdateIsAvailable: boolean;
+  // Anthropic API key for the AI categorization feature. Stored locally only
+  // (never synced) — keep secrets off the sync server.
+  anthropicApiKey?: string;
 }>;
 
 // GlobalPrefsJson represents what's saved in the global-store.json file
@@ -158,6 +162,7 @@ export type GlobalPrefsJson = Partial<{
   'server-self-signed-cert'?: GlobalPrefs['serverSelfSignedCert'];
   syncServerConfig?: GlobalPrefs['syncServerConfig'];
   notifyWhenUpdateIsAvailable?: GlobalPrefs['notifyWhenUpdateIsAvailable'];
+  'anthropic-api-key'?: GlobalPrefs['anthropicApiKey'];
 }>;
 
 export type AuthMethods = 'password' | 'openid';

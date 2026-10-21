@@ -338,6 +338,12 @@ export type Modal =
       };
     }
   | {
+      name: 'ai-category-review';
+      options: {
+        accountId?: AccountEntity['id'];
+      };
+    }
+  | {
       name: 'account-menu';
       options: {
         accountId: AccountEntity['id'];

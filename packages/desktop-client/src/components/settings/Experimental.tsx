@@ -238,6 +238,11 @@ export function ExperimentalFeatures() {
             >
               <Trans>Enable Banking sync (EU banks)</Trans>
             </FeatureToggle>
+            <FeatureToggle flag="aiCategorization">
+              <Trans>
+                AI transaction categorization (requires Anthropic API key)
+              </Trans>
+            </FeatureToggle>
             {showServerPrefs && (
               <ServerFeatureToggle
                 prefName="flags.plugins"
